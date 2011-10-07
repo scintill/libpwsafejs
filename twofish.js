@@ -184,13 +184,9 @@ window.TwoFish = {
         }
 
         while (blockCount--) {
-            //console.log('block');
             var block = [dataView.getUint32(), dataView.getUint32(), dataView.getUint32(), dataView.getUint32()];
 
             tfsDecrypt(block);
-            /*for (var i = outOffset; i < outOffset + BLOCK_SIZE; i++) {
-                console.log((outBuffer[i]>>>0).toString(16));
-            }*/
 
             if (cbcMode) {
                 var tell = dataView.tell();
@@ -199,10 +195,6 @@ window.TwoFish = {
                     setW(outBuffer, outOffset + i, getW(outBuffer, outOffset + i) ^ dataView.getUint32());
                 }
                 dataView.seek(tell);
-                /*block[0] ^= getW(outBuffer, outOffset-16);
-                block[1] ^= getW(outBuffer, outOffset-12);
-                block[2] ^= getW(outBuffer, outOffset-8);
-                block[3] ^= getW(outBuffer, outOffset-4);*/
             }
 
             outOffset += 16;
@@ -213,17 +205,18 @@ window.TwoFish = {
 };
 
 })();
+
+// some tests
 /*console.log(
 TwoFish.decrypt(
 new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes("37527BE0052334B89F0CFCCAE87CFA20"))), 1,
 Crypto.util.hexToBytes("0123456789ABCDEFFEDCBA987654321000112233445566778899AABBCCDDEEFF"))
-);*/
-/*console.log(
+);
+console.log(
 TwoFish.decrypt(
 new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes("00000000000000000000000000000000"))), 1,
 Crypto.util.hexToBytes("0000000000000000000000000000000000000000000000000000000000000000"))
-);*/
-/*
+);
 console.log(
 TwoFish.decrypt(
 new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes("1B1FE8F5A911CD4C0D800EDCE8ED0A942CBA6271A1044F90C30BA8FE91E1C163"))), 1,

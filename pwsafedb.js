@@ -1,20 +1,24 @@
 function PWSafeDB(data) {
     this._view = new jDataView(data);
 }
+
 $.extend(PWSafeDB.prototype, {
+
 BLOCK_SIZE: 16,
+
 validate: function() {
     if (this._view.getString(4) != "PWS3") {
         throw "Not a PWS v3 file";
     }
 
-    this._eofMarkerPos = this._view.length-32-this.BLOCK_SIZE;
+    this._eofMarkerPos = this._view.length - 32 - this.BLOCK_SIZE;
     if (this._eofMarkerPos <= 0 || (this._view.getString(this.BLOCK_SIZE, this._eofMarkerPos) != "PWS3-EOFPWS3-EOF")) {
         throw "No EOF marker found - not a valid v3 file, or it's corrupted";
     }
 
     return true;
 },
+
 decrypt: function(key) {
     this.validate();
 
@@ -32,7 +36,7 @@ decrypt: function(key) {
     var K = this._getByteArray(keyView, 32);
     var L = this._getByteArray(keyView, 32);
 
-    var numRecordBlocks = (this._eofMarkerPos-this._view.tell())/this.BLOCK_SIZE;
+    var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
     var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, K, true));
 
     this.headers = this._parseHeaders(recordView);
@@ -59,6 +63,7 @@ decrypt: function(key) {
     delete this._view;
     delete this._eofMarkerPos;
 },
+
 _parseHeaders: function(recordView) {
     var headers = {};
     var fieldType = undefined;
@@ -98,14 +103,11 @@ _parseHeaders: function(recordView) {
     }
     return headers;
 },
+
 _parseRecords: function(recordView) {
     var currentRecord = {};
     var records = [];
     while (recordView.tell() < recordView.length) {
-        /*if (recordView.tell() % 16) {
-            console.log('out of alignment');
-            return false;
-        }*/
         var fieldSize = recordView.getUint32();
         var fieldType = recordView.getUint8();
         var recordBegin = recordView.tell();
@@ -142,17 +144,18 @@ _parseRecords: function(recordView) {
 
     return records;
 },
+
 _dataViewFromPlaintext: function(buffer) {
     return new jDataView(jDataView.createBuffer.apply(null, buffer));
 },
+
 _alignToBlockBoundary: function(view) {
-    // align to block boundary
     var off = view.tell() % this.BLOCK_SIZE;
     if (off) {
-        //console.log('align '+(BLOCK_SIZE - off));
         view.seek(view.tell() + this.BLOCK_SIZE - off);
     }
 },
+
 _stretchKeySHA256: function(key, salt, iter) {
     key = Crypto.charenc.Binary.stringToBytes(key+salt);
     for (var i = iter; i >= 0; i--) {
@@ -160,9 +163,11 @@ _stretchKeySHA256: function(key, salt, iter) {
     }
     return key;
 },
+
 _getHexStringFromBytes: function(view, byteCount) {
     return Crypto.util.bytesToHex(this._getByteArray(view, byteCount));
 },
+
 _getByteArray: function(view, byteCount) {
     var bytes = new Array(byteCount);
     for(var i = 0; i < byteCount; i++) {
@@ -170,4 +175,5 @@ _getByteArray: function(view, byteCount) {
     }
     return bytes;
 }
+
 });
