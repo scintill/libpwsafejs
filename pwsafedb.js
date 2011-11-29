@@ -56,7 +56,7 @@ decrypt: function(key) {
 
     // sort by title
     this.records = this.records.sort(function(a, b) {
-        return a.title.localeCompare(b.title);
+        return a.title.toLocaleLowerCase().localeCompare(b.title.toLocaleLowerCase());
     });
 
     // clean up raw data
