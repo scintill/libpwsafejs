@@ -54,14 +54,15 @@ decrypt: function(key) {
         throw "HMAC didn't match -- something may be corrupted";
     }*/
 
-    // sort by title
-    this.records = this.records.sort(function(a, b) {
-        return a.title.toLocaleLowerCase().localeCompare(b.title.toLocaleLowerCase());
-    });
-
     // clean up raw data
     delete this._view;
     delete this._eofMarkerPos;
+},
+
+sortRecordsByTitle: function() {
+    this.records = this.records.sort(function(a, b) {
+        return a.title.toLocaleLowerCase().localeCompare(b.title.toLocaleLowerCase());
+    });
 },
 
 _parseHeaders: function(recordView) {
