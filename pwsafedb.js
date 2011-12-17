@@ -2,7 +2,7 @@ function PWSafeDB(data) {
     this._view = new jDataView(data);
 }
 
-$.extend(PWSafeDB.prototype, {
+jQuery.extend(PWSafeDB.prototype, {
 
 BLOCK_SIZE: 16,
 
@@ -69,6 +69,11 @@ _parseHeaders: function(recordView) {
     var fieldType = undefined;
     while(fieldType != 0xff) {
         var recordBegin = recordView.tell();
+
+        if (recordBegin >= recordView.length) {
+            break; // <-----
+        }
+
         var fieldSize = recordView.getUint32();
         fieldType = recordView.getUint8();
         switch(fieldType) {
@@ -97,9 +102,9 @@ _parseHeaders: function(recordView) {
         case 0xff: // END
             break;
         default: // unknown or unimportant
-            recordView.seek(recordBegin + fieldSize); // skip
+            recordView.seek(recordView.tell() + fieldSize);
         }
-        this._alignToBlockBoundary(recordView);
+        this._alignToBlockBoundary(recordView, fieldSize);
     }
     return headers;
 },
@@ -130,16 +135,14 @@ _parseRecords: function(recordView) {
         case 0x14: // Email
             currentRecord.email = recordView.getString(fieldSize);
             break;
-        case 0xff:
+        case 0xff: // END
             records.push(currentRecord);
             currentRecord = {};
             break;
         default: // unknown or unimportant
-            //console.log('unsupp type', (fieldType>>>0).toString(16));
-            //console.log('skipping '+fieldSize, recordBegin === recordView.tell());
-            recordView.seek(recordBegin + fieldSize); // skip
+            recordView.seek(recordView.tell() + fieldSize);
         }
-        this._alignToBlockBoundary(recordView);
+        this._alignToBlockBoundary(recordView, fieldSize);
     }
 
     return records;
@@ -149,9 +152,10 @@ _dataViewFromPlaintext: function(buffer) {
     return new jDataView(jDataView.createBuffer.apply(null, buffer));
 },
 
-_alignToBlockBoundary: function(view) {
+// if the last thing we read was 0-length, always align to next block, otherwise we'll loop forever!
+_alignToBlockBoundary: function(view, lastFieldSize) {
     var off = view.tell() % this.BLOCK_SIZE;
-    if (off) {
+    if (off || lastFieldSize == 0) {
         view.seek(view.tell() + this.BLOCK_SIZE - off);
     }
 },
