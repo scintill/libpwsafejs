@@ -28,6 +28,7 @@ validate: function() {
 decrypt: function(key) {
     this.validate();
 
+    // validate password and stretch it to get the decryption key
     var salt = this._getString(this._view, 32, 4);
     var iter = this._view.getUint32();
     var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
@@ -38,6 +39,7 @@ decrypt: function(key) {
         throw "Incorrect password";
     }
 
+    // get keys, decrypt all data
     var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
     var keyK = this._getByteArray(keyView, 32);
     var keyL = this._getByteArray(keyView, 32);
@@ -48,10 +50,22 @@ decrypt: function(key) {
     var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
     var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keyK, true));
 
-    this.headers = this._parseHeaders(recordView);
+    // prepare the hash of plaintext fields
+    this._isHashing = false;
+    this._hashBytes = [];
+
+    // read all fields
+    this._parseHeaders(recordView);
     this.records = this._parseRecords(recordView);
 
-    // TODO check hash of plaintext fields - need to do JUST the data, no padding.
+    // check hash of plaintext fields
+    this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
+    var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keyL, {asHex: true});
+    var expectedHMAC = this._getHexStringFromBytes(this._view, 32);
+
+    if (expectedHMAC !== actualHMAC) {
+        throw "HMAC didn't match -- something may be corrupted";
+    }
 
     // clean up raw data
     delete this._view;
@@ -65,97 +79,79 @@ sortRecordsByTitle: function() {
 },
 
 _parseHeaders: function(recordView) {
-    var headers = {};
-    var fieldType = undefined;
-    while(fieldType != 0xff) {
-        var recordBegin = recordView.tell();
-
-        if (recordBegin >= recordView.byteLength) {
+    var field = undefined;
+    while(field === undefined || field.type != 0xff) {
+        if (recordView.tell() >= recordView.byteLength) {
             break; // <-----
         }
 
-        var fieldSize = recordView.getUint32();
-        fieldType = recordView.getUint8();
-        switch(fieldType) {
-        case 0x00: // Version
-            headers.versionNumberOffset = recordView.tell() & ~(this.BLOCK_SIZE - 1);
-            headers.versionNumber = recordView.getUint16();
-            break;
-        case 0x01: // UUID
-            headers.UUID = Crypto.util.bytesToHex(this._getByteArray(recordView, 16));
-            break;
-        case 0x04: // Last saved time
-            headers.lastSaveTime = new Date(recordView.getUint32() * 1000);
-            break;
-        case 0x06: // Last save app
-            headers.lastSaveApp = this._getString(recordView, fieldSize);
-            break;
-        case 0x07: // Last save user
-            headers.lastSaveUser = this._getString(recordView, fieldSize);
-            break;
-        case 0x08: // Last save host
-            headers.lastSaveHost = this._getString(recordView, fieldSize);
-            break;
-        case 0x09: // Database name
-            headers.dbName = this._getString(recordView, fieldSize);
-            break;
+        var field = this._readField(recordView, true);
+        switch(field.type) {
         case 0xff: // END
             break;
         default: // unknown or unimportant
-            recordView.seek(recordView.tell() + fieldSize);
+            // updateHash handles all I care about for the version number record -- that is, where it is, for the HMAC verify
         }
-        this._alignToBlockBoundary(recordView, fieldSize);
     }
-    return headers;
 },
 
 _parseRecords: function(recordView) {
     var currentRecord = {};
     var records = [];
     while (recordView.tell() < recordView.byteLength) {
-        var fieldSize = recordView.getUint32();
-        var fieldType = recordView.getUint8();
-        var recordBegin = recordView.tell();
-        switch(fieldType) {
+        var field = this._readField(recordView);
+        switch(field.type) {
         case 0x03: // Title
-            currentRecord.title = this._getString(recordView, fieldSize);
+            currentRecord.title = field.valueStr;
             break;
         case 0x04: // Username
-            currentRecord.username = this._getString(recordView, fieldSize);
+            currentRecord.username = field.valueStr;
             break;
         case 0x05: // Notes
-            currentRecord.notes = this._getString(recordView, fieldSize);
+            currentRecord.notes = field.valueStr;
             break;
         case 0x06: // Password
-            currentRecord.password = this._getString(recordView, fieldSize);
+            currentRecord.password = field.valueStr;
             break;
         case 0x0d: // URL
-            currentRecord.URL = this._getString(recordView, fieldSize);
-            break;
-        case 0x14: // Email
-            currentRecord.email = this._getString(recordView, fieldSize);
+            currentRecord.URL = field.valueStr;
             break;
         case 0xff: // END
             records.push(currentRecord);
             currentRecord = {};
             break;
         default: // unknown or unimportant
-            recordView.seek(recordView.tell() + fieldSize);
         }
-        this._alignToBlockBoundary(recordView, fieldSize);
     }
 
     return records;
+},
+
+_readField: function(view, isHeader) {
+    isHeader = !!isHeader; // boolify undefined into false
+
+    var fieldSize = view.getUint32();
+    var field = {
+        isHeader: isHeader,
+        type: view.getUint8()
+    };
+    var bytes = this._getByteArray(view, fieldSize);
+    // TODO figure out best way to handle non-string fields?
+    field.valueStr = Crypto.charenc.Binary.bytesToString(bytes);
+    this._updateHash(bytes, field);
+
+    this._alignToBlockBoundary(view);
+
+    return field;
 },
 
 _dataViewFromPlaintext: function(buffer) {
     return new jDataView(jDataView.createBuffer.apply(null, buffer));
 },
 
-// if the last thing we read was 0-length, always align to next block, otherwise we'll loop forever!
-_alignToBlockBoundary: function(view, lastFieldSize) {
+_alignToBlockBoundary: function(view) {
     var off = view.tell() % this.BLOCK_SIZE;
-    if (off || lastFieldSize == 0) {
+    if (off) {
         view.seek(view.tell() + this.BLOCK_SIZE - off);
     }
 },
@@ -184,7 +180,18 @@ _getByteArray: function(view, byteCount, offset) {
 },
 
 _getString: function(view, length, offset) {
-    return Crypto.charenc.Binary.bytesToString(this._getByteArray(view, length, offset));            
+    var bytes = this._getByteArray(view, length, offset);
+    return Crypto.charenc.Binary.bytesToString(bytes);
+},
+
+_updateHash: function(bytes, field) {
+    if (field.isHeader && field.type == 0x00) {
+        this._isHashing = true;
+    }
+
+    if (this._isHashing) {
+        this._hashBytes = this._hashBytes.concat(bytes);                 
+    }
 }
 
 });
