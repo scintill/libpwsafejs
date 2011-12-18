@@ -7,12 +7,18 @@ jQuery.extend(PWSafeDB.prototype, {
 BLOCK_SIZE: 16,
 
 validate: function() {
-    if (this._view.getString(4) != "PWS3") {
+    if (this._getString(this._view, 4) != "PWS3") {
         throw "Not a PWS v3 file";
     }
 
-    this._eofMarkerPos = this._view.length - 32 - this.BLOCK_SIZE;
-    if (this._eofMarkerPos <= 0 || (this._view.getString(this.BLOCK_SIZE, this._eofMarkerPos) != "PWS3-EOFPWS3-EOF")) {
+    this._eofMarkerPos = this._view.byteLength - 32 - this.BLOCK_SIZE;
+
+    var eofMarker = null;
+    if (this._eofMarkerPos > 0) {
+        eofMarker = this._getString(this._view, this.BLOCK_SIZE, this._eofMarkerPos);
+    }
+
+    if (eofMarker != "PWS3-EOFPWS3-EOF") {
         throw "No EOF marker found - not a valid v3 file, or it's corrupted";
     }
 
@@ -22,7 +28,7 @@ validate: function() {
 decrypt: function(key) {
     this.validate();
 
-    var salt = this._view.getString(32, 4);
+    var salt = this._getString(this._view, 32, 4);
     var iter = this._view.getUint32();
     var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
     var stretchedKey = this._stretchKeySHA256(key, salt, iter);
@@ -33,26 +39,19 @@ decrypt: function(key) {
     }
 
     var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
-    var K = this._getByteArray(keyView, 32);
-    var L = this._getByteArray(keyView, 32);
+    var keyK = this._getByteArray(keyView, 32);
+    var keyL = this._getByteArray(keyView, 32);
 
+    if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
+        throw "EOF marker not aligned on block boundary?";
+    }
     var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
-    var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, K, true));
+    var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keyK, true));
 
     this.headers = this._parseHeaders(recordView);
     this.records = this._parseRecords(recordView);
 
-    // check hash of plaintext fields
-    /*this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
-    recordView.seek(this._headers.versionNumberOffset);
-    var actualHMAC = Crypto.HMAC(Crypto.SHA256,
-        this._getByteArray(recordView, recordView.length-this._headers.versionNumberOffset),
-        L, {asBytes: true});
-    var expectedHMAC = this._getByteArray(this._view, 32);
-
-    if (expectedHMAC !== actualHMAC) {
-        throw "HMAC didn't match -- something may be corrupted";
-    }*/
+    // TODO check hash of plaintext fields - need to do JUST the data, no padding.
 
     // clean up raw data
     delete this._view;
@@ -71,7 +70,7 @@ _parseHeaders: function(recordView) {
     while(fieldType != 0xff) {
         var recordBegin = recordView.tell();
 
-        if (recordBegin >= recordView.length) {
+        if (recordBegin >= recordView.byteLength) {
             break; // <-----
         }
 
@@ -79,8 +78,8 @@ _parseHeaders: function(recordView) {
         fieldType = recordView.getUint8();
         switch(fieldType) {
         case 0x00: // Version
-            headers.versionNumber = recordView.getUint16();
             headers.versionNumberOffset = recordView.tell() & ~(this.BLOCK_SIZE - 1);
+            headers.versionNumber = recordView.getUint16();
             break;
         case 0x01: // UUID
             headers.UUID = Crypto.util.bytesToHex(this._getByteArray(recordView, 16));
@@ -89,16 +88,16 @@ _parseHeaders: function(recordView) {
             headers.lastSaveTime = new Date(recordView.getUint32() * 1000);
             break;
         case 0x06: // Last save app
-            headers.lastSaveApp = recordView.getString(fieldSize);
+            headers.lastSaveApp = this._getString(recordView, fieldSize);
             break;
         case 0x07: // Last save user
-            headers.lastSaveUser = recordView.getString(fieldSize);
+            headers.lastSaveUser = this._getString(recordView, fieldSize);
             break;
         case 0x08: // Last save host
-            headers.lastSaveHost = recordView.getString(fieldSize);
+            headers.lastSaveHost = this._getString(recordView, fieldSize);
             break;
         case 0x09: // Database name
-            headers.dbName = recordView.getString(fieldSize);
+            headers.dbName = this._getString(recordView, fieldSize);
             break;
         case 0xff: // END
             break;
@@ -113,28 +112,28 @@ _parseHeaders: function(recordView) {
 _parseRecords: function(recordView) {
     var currentRecord = {};
     var records = [];
-    while (recordView.tell() < recordView.length) {
+    while (recordView.tell() < recordView.byteLength) {
         var fieldSize = recordView.getUint32();
         var fieldType = recordView.getUint8();
         var recordBegin = recordView.tell();
         switch(fieldType) {
         case 0x03: // Title
-            currentRecord.title = recordView.getString(fieldSize);
+            currentRecord.title = this._getString(recordView, fieldSize);
             break;
         case 0x04: // Username
-            currentRecord.username = recordView.getString(fieldSize);
+            currentRecord.username = this._getString(recordView, fieldSize);
             break;
         case 0x05: // Notes
-            currentRecord.notes = recordView.getString(fieldSize);
+            currentRecord.notes = this._getString(recordView, fieldSize);
             break;
         case 0x06: // Password
-            currentRecord.password = recordView.getString(fieldSize);
+            currentRecord.password = this._getString(recordView, fieldSize);
             break;
         case 0x0d: // URL
-            currentRecord.URL = recordView.getString(fieldSize);
+            currentRecord.URL = this._getString(recordView, fieldSize);
             break;
         case 0x14: // Email
-            currentRecord.email = recordView.getString(fieldSize);
+            currentRecord.email = this._getString(recordView, fieldSize);
             break;
         case 0xff: // END
             records.push(currentRecord);
@@ -173,12 +172,19 @@ _getHexStringFromBytes: function(view, byteCount) {
     return Crypto.util.bytesToHex(this._getByteArray(view, byteCount));
 },
 
-_getByteArray: function(view, byteCount) {
+_getByteArray: function(view, byteCount, offset) {
+    if (offset !== undefined) {
+        view.seek(offset);
+    }
     var bytes = new Array(byteCount);
     for(var i = 0; i < byteCount; i++) {
         bytes[i] = view.getUint8();
     }
     return bytes;
+},
+
+_getString: function(view, length, offset) {
+    return Crypto.charenc.Binary.bytesToString(this._getByteArray(view, length, offset));            
 }
 
 });
