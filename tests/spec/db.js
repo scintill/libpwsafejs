@@ -16,20 +16,13 @@ describe('Password Safe Database Reader', function() {
         return this;
     }).apply({});
 
-    it('decrypt and parse the database records', function() {
+    var testDecrypt = function(forceNoWorker) {
         var pdb = null;
+        var url = 'test.psafe3', password = 'pass';
 
         runs(function() {
-            $.ajax({
-                url: 'test.psafe3',
-                dataType: 'binary',
-                success: function (data) {
-                    pdb = new PWSafeDB(data);
-                },
-                error: function(jqXHR, textStatus) {
-                    pdb = "AJAX error. Status: "+textStatus;
-                }
-            });
+            PWSafeDB.jsPath = "../pwsafedb.js";
+            PWSafeDB.downloadAndDecrypt(url, password, function(_pdb) { pdb = _pdb; }, forceNoWorker);
         });
 
         waitsFor(function() { return pdb !== null; }, "database to load", 3000);
@@ -39,9 +32,6 @@ describe('Password Safe Database Reader', function() {
                 throw pdb;
             }
 
-            pdb.decrypt('pass');
-
-
             var recs = {};
             for (var i = 0; i < pdb.records.length; i++) {
                 recs[pdb.records[i].title] = pdb.records[i];
@@ -49,6 +39,9 @@ describe('Password Safe Database Reader', function() {
 
             expect(recs).toEqual(expRecords);
         });
-    });
+    };
+
+    it('decrypt and parse the database records (worker)', function() { return testDecrypt(false); });
+    it('decrypt and parse the database records (non-worker)', function() { return testDecrypt(true); });
 
 });

@@ -1,12 +1,59 @@
 function PWSafeDB(data) {
-    this._view = new jDataView(data);
+    if (((typeof ArrayBuffer !== 'undefined') && (data instanceof ArrayBuffer)) || typeof data == 'string') {
+        this._data = data;
+    } else if (data instanceof Object) {
+        // allow "casting" after de-JSON from the worker
+        this.records = data.records;
+    }
 }
 
-jQuery.extend(PWSafeDB.prototype, {
 
-BLOCK_SIZE: 16,
+try {
+    if (importScripts) {
+        PWSafeDB.webWorker = true;
+    } else {
+        PWSafeDB.webWorker = false;
+    }
+} catch (e) {
+    PWSafeDB.webWorker = false;
+}
 
-validate: function() {
+PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
+    if (!PWSafeDB.jsPath) {
+        throw "jsPath must be set";
+    }
+
+    jQuery.ajax({
+        url: url,
+        dataType: 'binary',
+        cache: false,
+        success: function(data) {
+            if (!forceNoWorker && window.Worker) {
+                var worker = new Worker(PWSafeDB.jsPath);
+                worker.onmessage = function(event) {
+                    var data = event.data;
+                    if (typeof data == 'string') {
+                        callback(data);
+                    } else {
+                        callback(new PWSafeDB(event.data));
+                    }
+                };
+
+                worker.postMessage({data: data, key: key});
+            } else {
+                new PWSafeDB(data).decrypt(key, function(pdb) { callback(pdb); });
+            }
+        },
+        error: function(jqXHR, textStatus) {
+            callback("AJAX error. Status: "+textStatus);
+        }
+    });
+}
+
+
+PWSafeDB.prototype.BLOCK_SIZE = 16;
+
+PWSafeDB.prototype.validate = function() {
     if (this._getString(this._view, 4) != "PWS3") {
         throw "Not a PWS v3 file";
     }
@@ -23,62 +70,70 @@ validate: function() {
     }
 
     return true;
-},
+};
 
-decrypt: function(key) {
-    this.validate();
+PWSafeDB.prototype.decrypt = function(key, callback) {
+    try {
+        this._view = new jDataView(this._data, undefined, undefined, true /* little-endian */);
 
-    // validate password and stretch it to get the decryption key
-    var salt = this._getString(this._view, 32, 4);
-    var iter = this._view.getUint32();
-    var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
-    var stretchedKey = this._stretchKeySHA256(key, salt, iter);
-    var stretchedKeyHash = Crypto.SHA256(stretchedKey);
+        this.validate();
 
-    if (expectedStretchedKeyHash !== stretchedKeyHash) {
-        throw "Incorrect password";
+        // validate password and stretch it to get the decryption key
+        var salt = this._getString(this._view, 32, 4);
+        var iter = this._view.getUint32();
+        var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
+        var stretchedKey = this._stretchKeySHA256(key, salt, iter);
+        var stretchedKeyHash = Crypto.SHA256(stretchedKey);
+
+        if (expectedStretchedKeyHash !== stretchedKeyHash) {
+            throw "Incorrect password";
+        }
+
+        // get keys, decrypt all data
+        var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
+        var keyK = this._getByteArray(keyView, 32);
+        var keyL = this._getByteArray(keyView, 32);
+
+        if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
+            throw "EOF marker not aligned on block boundary?";
+        }
+        var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
+        var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keyK, true));
+
+        // prepare the hash of plaintext fields
+        this._isHashing = false;
+        this._hashBytes = [];
+
+        // read all fields
+        this._parseHeaders(recordView);
+        this.records = this._parseRecords(recordView);
+
+        // check hash of plaintext fields
+        this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
+        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keyL, {asHex: true});
+        var expectedHMAC = this._getHexStringFromBytes(this._view, 32);
+
+        if (expectedHMAC !== actualHMAC) {
+            throw "HMAC didn't match -- something may be corrupted";
+        }
+
+        // clean up raw data
+        delete this._view;
+        delete this._eofMarkerPos;
+
+        callback(this);
+    } catch (e) {
+        callback(""+e);
     }
+};
 
-    // get keys, decrypt all data
-    var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
-    var keyK = this._getByteArray(keyView, 32);
-    var keyL = this._getByteArray(keyView, 32);
-
-    if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
-        throw "EOF marker not aligned on block boundary?";
-    }
-    var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
-    var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keyK, true));
-
-    // prepare the hash of plaintext fields
-    this._isHashing = false;
-    this._hashBytes = [];
-
-    // read all fields
-    this._parseHeaders(recordView);
-    this.records = this._parseRecords(recordView);
-
-    // check hash of plaintext fields
-    this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
-    var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keyL, {asHex: true});
-    var expectedHMAC = this._getHexStringFromBytes(this._view, 32);
-
-    if (expectedHMAC !== actualHMAC) {
-        throw "HMAC didn't match -- something may be corrupted";
-    }
-
-    // clean up raw data
-    delete this._view;
-    delete this._eofMarkerPos;
-},
-
-sortRecordsByTitle: function() {
+PWSafeDB.prototype.sortRecordsByTitle = function() {
     this.records = this.records.sort(function(a, b) {
         return a.title.toLocaleLowerCase().localeCompare(b.title.toLocaleLowerCase());
     });
-},
+};
 
-_parseHeaders: function(recordView) {
+PWSafeDB.prototype._parseHeaders = function(recordView) {
     var field = undefined;
     while(field === undefined || field.type != 0xff) {
         if (recordView.tell() >= recordView.byteLength) {
@@ -93,9 +148,9 @@ _parseHeaders: function(recordView) {
             // updateHash handles all I care about for the version number record -- that is, where it is, for the HMAC verify
         }
     }
-},
+};
 
-_parseRecords: function(recordView) {
+PWSafeDB.prototype._parseRecords = function(recordView) {
     var currentRecord = {};
     var records = [];
     while (recordView.tell() < recordView.byteLength) {
@@ -125,9 +180,9 @@ _parseRecords: function(recordView) {
     }
 
     return records;
-},
+};
 
-_readField: function(view, isHeader) {
+PWSafeDB.prototype._readField = function(view, isHeader) {
     isHeader = !!isHeader; // boolify undefined into false
 
     var fieldSize = view.getUint32();
@@ -143,32 +198,32 @@ _readField: function(view, isHeader) {
     this._alignToBlockBoundary(view);
 
     return field;
-},
+};
 
-_dataViewFromPlaintext: function(buffer) {
-    return new jDataView(jDataView.createBuffer.apply(null, buffer));
-},
+PWSafeDB.prototype._dataViewFromPlaintext = function(buffer) {
+    return new jDataView(jDataView.createBuffer.apply(null, buffer), undefined, undefined, true /* little-endian */);
+};
 
-_alignToBlockBoundary: function(view) {
+PWSafeDB.prototype._alignToBlockBoundary = function(view) {
     var off = view.tell() % this.BLOCK_SIZE;
     if (off) {
         view.seek(view.tell() + this.BLOCK_SIZE - off);
     }
-},
+};
 
-_stretchKeySHA256: function(key, salt, iter) {
+PWSafeDB.prototype._stretchKeySHA256 = function(key, salt, iter) {
     key = Crypto.charenc.Binary.stringToBytes(key+salt);
     for (var i = iter; i >= 0; i--) {
         key = Crypto.SHA256(key, {asBytes: true });
     }
     return key;
-},
+};
 
-_getHexStringFromBytes: function(view, byteCount) {
+PWSafeDB.prototype._getHexStringFromBytes = function(view, byteCount) {
     return Crypto.util.bytesToHex(this._getByteArray(view, byteCount));
-},
+};
 
-_getByteArray: function(view, byteCount, offset) {
+PWSafeDB.prototype._getByteArray = function(view, byteCount, offset) {
     if (offset !== undefined) {
         view.seek(offset);
     }
@@ -177,14 +232,14 @@ _getByteArray: function(view, byteCount, offset) {
         bytes[i] = view.getUint8();
     }
     return bytes;
-},
+};
 
-_getString: function(view, length, offset) {
+PWSafeDB.prototype._getString = function(view, length, offset) {
     var bytes = this._getByteArray(view, length, offset);
     return Crypto.charenc.Binary.bytesToString(bytes);
-},
+};
 
-_updateHash: function(bytes, field) {
+PWSafeDB.prototype._updateHash = function(bytes, field) {
     if (field.isHeader && field.type == 0x00) {
         this._isHashing = true;
     }
@@ -192,6 +247,19 @@ _updateHash: function(bytes, field) {
     if (this._isHashing) {
         this._hashBytes = this._hashBytes.concat(bytes);                 
     }
-}
+};
 
-});
+
+
+// Web Worker interface
+if (PWSafeDB.webWorker) {
+    importScripts('jDataView/src/jdataview.js', 'crypto-sha256-hmac.js', 'twofish.js');
+
+    onmessage = function(event) {
+        var data = event.data;
+        new PWSafeDB(data.data).decrypt(data.key, function(result) {
+            postMessage(result);
+        });
+    };
+
+}

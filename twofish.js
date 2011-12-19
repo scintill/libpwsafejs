@@ -169,7 +169,7 @@ function rotw(w,n){ return ( w<<n | w>>>(32-n) ) & wMax; }
 function getB(x,n){ return (x>>>(n*8))&0xFF; }
 wMax = 0xffffffff;
 
-window.TwoFish = {
+/*window.*/TwoFish = {
     decrypt: function(dataView, blockCount, key, cbcMode) {
         var BLOCK_SIZE = 16;
         tfsInit(key);
