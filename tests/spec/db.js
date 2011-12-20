@@ -21,7 +21,6 @@ describe('Password Safe Database Reader', function() {
         var url = 'test.psafe3', password = 'pass';
 
         runs(function() {
-            PWSafeDB.jsPath = "../pwsafedb.js";
             PWSafeDB.downloadAndDecrypt(url, password, function(_pdb) { pdb = _pdb; }, forceNoWorker);
         });
 
@@ -41,7 +40,9 @@ describe('Password Safe Database Reader', function() {
         });
     };
 
-    it('decrypt and parse the database records (worker)', function() { return testDecrypt(false); });
-    it('decrypt and parse the database records (non-worker)', function() { return testDecrypt(true); });
+    it('decrypt and parse the database records', function() { return testDecrypt(false); });
+    if (window.Worker) {
+        it('decrypt and parse the database records (non-worker)', function() { return testDecrypt(true); });
+    }
 
 });

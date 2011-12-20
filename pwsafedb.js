@@ -10,50 +10,94 @@ function PWSafeDB(data) {
 
 try {
     if (importScripts) {
-        PWSafeDB.webWorker = true;
+        PWSafeDB.isWebWorker = true;
     } else {
-        PWSafeDB.webWorker = false;
+        PWSafeDB.isWebWorker = false;
     }
 } catch (e) {
-    PWSafeDB.webWorker = false;
+    PWSafeDB.isWebWorker = false;
 }
 
 PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
-    if (!PWSafeDB.jsPath) {
-        throw "jsPath must be set";
+    var useWebWorker = !forceNoWorker && window.Worker;
+
+    var getAndDecrypt = function() {
+        jQuery.ajax({
+            url: url,
+            dataType: 'binary',
+            cache: false,
+            success: function(data) {
+                if (useWebWorker) {
+                    var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
+                    worker.onmessage = function(event) {
+                        var data = event.data;
+                        if (typeof data == 'string') {
+                            callback(data);
+                        } else {
+                            callback(new PWSafeDB(event.data));
+                        }
+                    };
+
+                    worker.postMessage({data: data, key: key});
+                } else {
+                    new PWSafeDB(data).decrypt(key, function(pdb) { callback(pdb); });
+                }
+            },
+            error: function(jqXHR, textStatus) {
+                callback("AJAX error. Status: "+textStatus);
+            }
+        });
     }
 
-    jQuery.ajax({
-        url: url,
-        dataType: 'binary',
-        cache: false,
-        success: function(data) {
-            if (!forceNoWorker && window.Worker) {
-                var worker = new Worker(PWSafeDB.jsPath);
-                worker.onmessage = function(event) {
-                    var data = event.data;
-                    if (typeof data == 'string') {
-                        callback(data);
-                    } else {
-                        callback(new PWSafeDB(event.data));
-                    }
-                };
-
-                worker.postMessage({data: data, key: key});
-            } else {
-                new PWSafeDB(data).decrypt(key, function(pdb) { callback(pdb); });
-            }
-        },
-        error: function(jqXHR, textStatus) {
-            callback("AJAX error. Status: "+textStatus);
-        }
-    });
+    if (useWebWorker) {
+        getAndDecrypt.apply(this);
+    } else {
+        // load the async libraries since we will need them
+        // TODO find some reliable way to do this in the background since we won't be needing it for awhile?
+        jQuery.getScript(jQuery('script[src$="crypto-sha256-hmac.js"]').attr('src').replace('.js', '-async.js'),
+            (function(thiz) { return function() {
+                getAndDecrypt.apply(thiz);
+            }; })(this));
+    }
 }
 
 
 PWSafeDB.prototype.BLOCK_SIZE = 16;
 
-PWSafeDB.prototype.validate = function() {
+PWSafeDB.prototype.decrypt = function(passphrase, callback) {
+    try {
+        this._view = new jDataView(this._data, undefined, undefined, true /* little-endian */);
+
+        this._chunkWork(function() {
+
+            this._validateFile();
+            var keys = this._getDecryptionKeys(passphrase);
+            var recordView = this._decryptRecords(keys);
+
+            this._chunkWork(function() {
+
+                this._readAllRecords(recordView);
+
+                this._chunkWork(function() {
+
+                    this._verifyHMAC(keys, (function(pdb) { return function(matched) {
+                        // clean up raw data
+                        delete this._view;
+                        delete this._eofMarkerPos;
+                        if (!matched) {
+                            callback("HMAC didn't match -- something may be corrupted");
+                        }
+                        callback(pdb);
+                    }; })(this));
+                });
+            });
+        });
+    } catch (e) {
+        callback(""+e);
+    }
+};
+
+PWSafeDB.prototype._validateFile = function() {
     if (this._getString(this._view, 4) != "PWS3") {
         throw "Not a PWS v3 file";
     }
@@ -72,59 +116,58 @@ PWSafeDB.prototype.validate = function() {
     return true;
 };
 
-PWSafeDB.prototype.decrypt = function(key, callback) {
-    try {
-        this._view = new jDataView(this._data, undefined, undefined, true /* little-endian */);
-
-        this.validate();
-
-        // validate password and stretch it to get the decryption key
-        var salt = this._getString(this._view, 32, 4);
-        var iter = this._view.getUint32();
-        var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
-        var stretchedKey = this._stretchKeySHA256(key, salt, iter);
-        var stretchedKeyHash = Crypto.SHA256(stretchedKey);
-
-        if (expectedStretchedKeyHash !== stretchedKeyHash) {
-            throw "Incorrect password";
-        }
-
-        // get keys, decrypt all data
-        var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
-        var keyK = this._getByteArray(keyView, 32);
-        var keyL = this._getByteArray(keyView, 32);
-
-        if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
-            throw "EOF marker not aligned on block boundary?";
-        }
-        var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
-        var recordView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keyK, true));
-
-        // prepare the hash of plaintext fields
-        this._isHashing = false;
-        this._hashBytes = [];
-
-        // read all fields
-        this._parseHeaders(recordView);
-        this.records = this._parseRecords(recordView);
-
-        // check hash of plaintext fields
-        this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
-        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keyL, {asHex: true});
-        var expectedHMAC = this._getHexStringFromBytes(this._view, 32);
-
-        if (expectedHMAC !== actualHMAC) {
-            throw "HMAC didn't match -- something may be corrupted";
-        }
-
-        // clean up raw data
-        delete this._view;
-        delete this._eofMarkerPos;
-
-        callback(this);
-    } catch (e) {
-        callback(""+e);
+PWSafeDB.prototype._decryptRecords = function(keys) {
+    if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
+        throw "EOF marker not aligned on block boundary?";
     }
+    var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
+    
+    return this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keys.K, true));
+};
+
+PWSafeDB.prototype._readAllRecords = function(recordView) {
+    // prepare the hash of plaintext fields
+    this._isHashing = false;
+    this._hashBytes = [];
+
+    // read all fields
+    this._parseHeaders(recordView);
+    this.records = this._parseRecords(recordView);
+};
+
+PWSafeDB.prototype._verifyHMAC = function(keys, callback) {
+    // check hash of plaintext fields
+    this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
+    var expectedHMAC = this._getHexStringFromBytes(this._view, 32);
+
+    if (PWSafeDB.isWebWorker) {
+        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asHex: true});
+        callback(expectedHMAC === actualHMAC);
+    } else {
+        Crypto.HMACAsync(Crypto.SHA256Async, this._hashBytes, keys.L, {asHex: true}, function(actualHMAC) {
+            callback(expectedHMAC === actualHMAC);
+        });
+    }
+};
+
+PWSafeDB.prototype._getDecryptionKeys = function(passphrase) {
+    // validate password and stretch it to get the decryption key
+    var salt = this._getString(this._view, 32, 4);
+    var iter = this._view.getUint32();
+    var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
+    var stretchedKey = this._stretchKeySHA256(passphrase, salt, iter);
+    var stretchedKeyHash = Crypto.SHA256(stretchedKey);
+
+    if (expectedStretchedKeyHash !== stretchedKeyHash) {
+        throw "Incorrect password";
+    }
+
+    var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
+    var keys = {};
+    keys.K = this._getByteArray(keyView, 32);
+    keys.L = this._getByteArray(keyView, 32);
+
+    return keys;
 };
 
 PWSafeDB.prototype.sortRecordsByTitle = function() {
@@ -249,10 +292,20 @@ PWSafeDB.prototype._updateHash = function(bytes, field) {
     }
 };
 
+PWSafeDB.prototype._chunkWork = function(chunkFunc) {
+    if (PWSafeDB.isWebWorker) {
+        chunkFunc.apply(this);
+    } else {
+        var thiz = this;
+        window.setTimeout(function() {
+            return chunkFunc.apply(thiz);
+        }, 1);
+    }
+};
 
 
 // Web Worker interface
-if (PWSafeDB.webWorker) {
+if (PWSafeDB.isWebWorker) {
     importScripts('jDataView/src/jdataview.js', 'crypto-sha256-hmac.js', 'twofish.js');
 
     onmessage = function(event) {
