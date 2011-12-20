@@ -1,22 +1,14 @@
-function PWSafeDB(data) {
-    if (((typeof ArrayBuffer !== 'undefined') && (data instanceof ArrayBuffer)) || typeof data == 'string') {
-        this._data = data;
-    } else if (data instanceof Object) {
+function PWSafeDB(buffer) {
+    if (((typeof ArrayBuffer !== 'undefined') && (buffer instanceof ArrayBuffer)) || typeof buffer == 'string') {
+        this._buffer = buffer;
+    } else if (buffer instanceof Object) {
         // allow "casting" after de-JSON from the worker
-        this.records = data.records;
+        this.records = buffer.records;
     }
 }
 
 
-try {
-    if (importScripts) {
-        PWSafeDB.isWebWorker = true;
-    } else {
-        PWSafeDB.isWebWorker = false;
-    }
-} catch (e) {
-    PWSafeDB.isWebWorker = false;
-}
+PWSafeDB.isWebWorker = typeof importScripts != 'undefined';
 
 PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
     var useWebWorker = !forceNoWorker && window.Worker;
@@ -24,23 +16,23 @@ PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
     var getAndDecrypt = function() {
         jQuery.ajax({
             url: url,
-            dataType: 'binary',
+            dataType: 'dataview',
             cache: false,
-            success: function(data) {
+            success: function(view) {
                 if (useWebWorker) {
                     var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
                     worker.onmessage = function(event) {
-                        var data = event.data;
-                        if (typeof data == 'string') {
-                            callback(data);
+                        if (typeof event.data == 'string') {
+                            callback(event.data);
                         } else {
                             callback(new PWSafeDB(event.data));
                         }
                     };
 
-                    worker.postMessage({data: data, key: key});
+                    // Chrome (at least) had problems passing the whole jDataView to the worker
+                    worker.postMessage({buffer: view.buffer, key: key});
                 } else {
-                    new PWSafeDB(data).decrypt(key, function(pdb) { callback(pdb); });
+                    new PWSafeDB(view.buffer).decrypt(key, function(pdb) { callback(pdb); });
                 }
             },
             error: function(jqXHR, textStatus) {
@@ -68,7 +60,7 @@ PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
 PWSafeDB.prototype.BLOCK_SIZE = 16;
 
 PWSafeDB.prototype.decrypt = function(passphrase, callback) {
-    this._view = new jDataView(this._data, undefined, undefined, true /* little-endian */);
+    this._view = new jDataView(this._buffer, undefined, undefined, true /* little-endian */);
 
     this._chunkWork(function() {
 
@@ -328,7 +320,7 @@ if (PWSafeDB.isWebWorker) {
 
     onmessage = function(event) {
         var data = event.data;
-        new PWSafeDB(data.data).decrypt(data.key, function(result) {
+        new PWSafeDB(data.buffer).decrypt(data.key, function(result) {
             postMessage(result);
         });
     };
