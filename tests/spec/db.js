@@ -16,33 +16,57 @@ describe('Password Safe Database Reader', function() {
         return this;
     }).apply({});
 
-    var testDecrypt = function(forceNoWorker) {
+    var decrypt = function(forceNoWorker, funToRun, pass, url) {
         var pdb = null;
-        var url = 'test.psafe3', password = 'pass';
+        url = url || 'test.psafe3';
+        pass = pass || 'pass';
 
         runs(function() {
-            PWSafeDB.downloadAndDecrypt(url, password, function(_pdb) { pdb = _pdb; }, forceNoWorker);
+            PWSafeDB.downloadAndDecrypt(url, pass, function(_pdb) { pdb = _pdb; }, forceNoWorker);
         });
 
         waitsFor(function() { return pdb !== null; }, "database to load", 3000);
 
-        runs(function() {
-            if (typeof pdb == "string") {
-                throw pdb;
-            }
+        runs(function() { funToRun(pdb) });
+    };
 
-            var recs = {};
-            for (var i = 0; i < pdb.records.length; i++) {
-                recs[pdb.records[i].title] = pdb.records[i];
-            }
+    var expectRecords = function(pdb) {
+        if (typeof pdb == "string") {
+            throw pdb;
+        }
 
-            expect(recs).toEqual(expRecords);
+        var recs = {};
+        for (var i = 0; i < pdb.records.length; i++) {
+            recs[pdb.records[i].title] = pdb.records[i];
+        }
+
+        expect(recs).toEqual(expRecords);
+    };
+
+    var allTests = function(workerVal, appendString) {
+        it('decrypt and parse the database records'+appendString, function() { return decrypt(workerVal, expectRecords); });
+        it('report incorrect password'+appendString, function() {
+                return decrypt(workerVal, function(err) {
+                    expect(err).toEqual("Incorrect password");
+                }, "boguspass");
+        });
+        it('report mismatched HMAC (HMAC corrupt)'+appendString, function() {
+                return decrypt(workerVal, function(err) {
+                    expect(err).toEqual("HMAC didn't match -- something may be corrupted");
+                }, undefined, 'test-corrupthmac.psafe3');
+        });
+        // TODO took me a few tries to corrupt something that yielded this error. thankfully nothing like
+        // infinite loops happened, but maybe I should test graceful recovery from more corruption scenarios
+        it('report mismatched HMAC (MAC corrupt)'+appendString, function() {
+                return decrypt(workerVal, function(err) {
+                    expect(err).toEqual("HMAC didn't match -- something may be corrupted");
+                }, undefined, 'test-corruptdata.psafe3');
         });
     };
 
-    it('decrypt and parse the database records', function() { return testDecrypt(false); });
+    allTests(false, "");
     if (window.Worker) {
-        it('decrypt and parse the database records (non-worker)', function() { return testDecrypt(true); });
+        allTests(true, " (non-worker)");
     }
 
 });

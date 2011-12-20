@@ -65,41 +65,54 @@ PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
 PWSafeDB.prototype.BLOCK_SIZE = 16;
 
 PWSafeDB.prototype.decrypt = function(passphrase, callback) {
-    try {
-        this._view = new jDataView(this._data, undefined, undefined, true /* little-endian */);
+    this._view = new jDataView(this._data, undefined, undefined, true /* little-endian */);
+
+    this._chunkWork(function() {
+
+        var valid = this._validateFile();
+        if (typeof valid == "string") {
+            callback(valid);
+            return; // <----
+        }
+
+        var keys = this._getDecryptionKeys(passphrase);
+        if (typeof keys == "string") {
+            callback(keys);
+            return; // <----
+        }
+
+        var recordView = this._decryptRecords(keys);
+        if (typeof recordView == "string") {
+            callback(recordView);
+            return; // <----
+        }
 
         this._chunkWork(function() {
 
-            this._validateFile();
-            var keys = this._getDecryptionKeys(passphrase);
-            var recordView = this._decryptRecords(keys);
+            this._readAllRecords(recordView);
 
             this._chunkWork(function() {
 
-                this._readAllRecords(recordView);
-
-                this._chunkWork(function() {
-
-                    this._verifyHMAC(keys, (function(pdb) { return function(matched) {
-                        // clean up raw data
-                        delete this._view;
-                        delete this._eofMarkerPos;
-                        if (!matched) {
-                            callback("HMAC didn't match -- something may be corrupted");
-                        }
+                this._verifyHMAC(keys, (function(pdb) { return function(matched) {
+                    // clean up raw data
+                    delete this._view;
+                    delete this._eofMarkerPos;
+                    if (!matched) {
+                        callback("HMAC didn't match -- something may be corrupted");
+                        return; // <----
+                    } else {
                         callback(pdb);
-                    }; })(this));
-                });
+                        return; // <----
+                    }
+                }; })(this));
             });
         });
-    } catch (e) {
-        callback(""+e);
-    }
+    });
 };
 
 PWSafeDB.prototype._validateFile = function() {
     if (this._getString(this._view, 4) != "PWS3") {
-        throw "Not a PWS v3 file";
+        return "Not a PWS v3 file";
     }
 
     this._eofMarkerPos = this._view.byteLength - 32 - this.BLOCK_SIZE;
@@ -110,7 +123,7 @@ PWSafeDB.prototype._validateFile = function() {
     }
 
     if (eofMarker != "PWS3-EOFPWS3-EOF") {
-        throw "No EOF marker found - not a valid v3 file, or it's corrupted";
+        return "No EOF marker found - not a valid v3 file, or it's corrupted";
     }
 
     return true;
@@ -118,7 +131,7 @@ PWSafeDB.prototype._validateFile = function() {
 
 PWSafeDB.prototype._decryptRecords = function(keys) {
     if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
-        throw "EOF marker not aligned on block boundary?";
+        return "EOF marker not aligned on block boundary?";
     }
     var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
     
@@ -159,7 +172,7 @@ PWSafeDB.prototype._getDecryptionKeys = function(passphrase) {
     var stretchedKeyHash = Crypto.SHA256(stretchedKey);
 
     if (expectedStretchedKeyHash !== stretchedKeyHash) {
-        throw "Incorrect password";
+        return "Incorrect password";
     }
 
     var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
