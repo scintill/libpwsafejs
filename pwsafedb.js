@@ -49,15 +49,18 @@ PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
         });
     }
 
-    if (useWebWorker) {
+    if (useWebWorker || typeof Crypto.HMACAsync != 'undefined') {
         getAndDecrypt.apply(this);
     } else {
         // load the async libraries since we will need them
         // TODO find some reliable way to do this in the background since we won't be needing it for awhile?
-        jQuery.getScript(jQuery('script[src$="crypto-sha256-hmac.js"]').attr('src').replace('.js', '-async.js'),
-            (function(thiz) { return function() {
+        jQuery.ajax({
+            url: jQuery('script[src$="crypto-sha256-hmac.js"]').attr('src').replace('.js', '-async.js'),
+            dataType: "script",
+            error: function(jqXHR, textStatus) { callback("AJAX async-load extra dependecy error "+textStatus); },
+            success: (function(thiz) { return function() {
                 getAndDecrypt.apply(thiz);
-            }; })(this));
+            }; })(this)});
     }
 }
 
@@ -95,8 +98,10 @@ PWSafeDB.prototype.decrypt = function(passphrase, callback) {
 
                 this._verifyHMAC(keys, (function(pdb) { return function(matched) {
                     // clean up raw data
-                    delete this._view;
-                    delete this._eofMarkerPos;
+                    try {
+                        delete this._view;
+                        delete this._eofMarkerPos;
+                    } catch(e) {} // IE has problems with these deletes -- not sure why
                     if (!matched) {
                         callback("HMAC didn't match -- something may be corrupted");
                         return; // <----
