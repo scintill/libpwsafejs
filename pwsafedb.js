@@ -162,10 +162,11 @@ PWSafeDB.prototype._verifyHMAC = function(keys, callback) {
 
 PWSafeDB.prototype._getDecryptionKeys = function(passphrase) {
     // validate password and stretch it to get the decryption key
-    var salt = this._getString(this._view, 32, 4);
+    var salt = this._getByteArray(this._view, 32, 4);
     var iter = this._view.getUint32();
     var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
-    var stretchedKey = this._stretchKeySHA256(passphrase, salt, iter);
+    var stretchedKey = this._stretchKeySHA256(
+            Crypto.charenc.Binary.stringToBytes(passphrase), salt, iter);
     var stretchedKeyHash = Crypto.SHA256(stretchedKey);
 
     if (expectedStretchedKeyHash !== stretchedKeyHash) {
@@ -265,7 +266,7 @@ PWSafeDB.prototype._alignToBlockBoundary = function(view) {
 };
 
 PWSafeDB.prototype._stretchKeySHA256 = function(key, salt, iter) {
-    key = Crypto.charenc.Binary.stringToBytes(key+salt);
+    key = key.concat(salt);
     for (var i = iter; i >= 0; i--) {
         key = Crypto.SHA256(key, {asBytes: true });
     }
