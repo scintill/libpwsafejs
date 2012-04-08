@@ -8,52 +8,37 @@ function PWSafeDB(buffer) {
 }
 
 
+// am I running inside of a web worker?
 PWSafeDB.isWebWorker = typeof importScripts != 'undefined';
 
 PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
     var useWebWorker = !forceNoWorker && window.Worker;
 
-    var getAndDecrypt = function() {
-        jQuery.ajax({
-            url: url,
-            dataType: 'dataview',
-            cache: false,
-            success: function(view) {
-                if (useWebWorker) {
-                    var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
-                    worker.onmessage = function(event) {
-                        if (typeof event.data == 'string') {
-                            callback(event.data);
-                        } else {
-                            callback(new PWSafeDB(event.data));
-                        }
-                    };
+    jQuery.ajax({
+        url: url,
+        dataType: 'dataview',
+        cache: false,
+        success: function(view) {
+            if (useWebWorker) {
+                var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
+                worker.onmessage = function(event) {
+                    if (typeof event.data == 'string') {
+                        callback(event.data);
+                    } else {
+                        callback(new PWSafeDB(event.data));
+                    }
+                };
 
-                    // Chrome (at least) had problems passing the whole jDataView to the worker
-                    worker.postMessage({buffer: view.buffer, key: key});
-                } else {
-                    new PWSafeDB(view.buffer).decrypt(key, function(pdb) { callback(pdb); });
-                }
-            },
-            error: function(jqXHR, textStatus) {
-                callback("AJAX error. Status: "+textStatus);
+                // Chrome (at least) had problems passing the whole jDataView to the worker
+                worker.postMessage({buffer: view.buffer, key: key});
+            } else {
+                new PWSafeDB(view.buffer).decrypt(key, function(pdb) { callback(pdb); });
             }
-        });
-    }
-
-    if (useWebWorker || typeof Crypto.HMACAsync != 'undefined') {
-        getAndDecrypt.apply(this);
-    } else {
-        // load the async libraries since we will need them
-        // TODO find some reliable way to do this in the background since we won't be needing it for awhile?
-        jQuery.ajax({
-            url: jQuery('script[src$="crypto-sha256-hmac.js"]').attr('src').replace('.js', '-async.js'),
-            dataType: "script",
-            error: function(jqXHR, textStatus) { callback("AJAX async-load extra dependecy error "+textStatus); },
-            success: (function(thiz) { return function() {
-                getAndDecrypt.apply(thiz);
-            }; })(this)});
-    }
+        },
+        error: function(jqXHR, textStatus) {
+            callback("AJAX error. Status: "+textStatus);
+        }
+    });
 }
 
 
@@ -154,9 +139,9 @@ PWSafeDB.prototype._verifyHMAC = function(keys, callback) {
         var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asHex: true});
         callback(expectedHMAC === actualHMAC);
     } else {
-        Crypto.HMACAsync(Crypto.SHA256Async, this._hashBytes, keys.L, {asHex: true}, function(actualHMAC) {
+        Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asHex: true, callback: function(actualHMAC) {
             callback(expectedHMAC === actualHMAC);
-        });
+        }});
     }
 };
 
