@@ -205,20 +205,3 @@ wMax = 0xffffffff;
 };
 
 })();
-
-// some tests
-/*console.log(
-TwoFish.decrypt(
-new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes("37527BE0052334B89F0CFCCAE87CFA20"))), 1,
-Crypto.util.hexToBytes("0123456789ABCDEFFEDCBA987654321000112233445566778899AABBCCDDEEFF"))
-);
-console.log(
-TwoFish.decrypt(
-new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes("00000000000000000000000000000000"))), 1,
-Crypto.util.hexToBytes("0000000000000000000000000000000000000000000000000000000000000000"))
-);
-console.log(
-TwoFish.decrypt(
-new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes("1B1FE8F5A911CD4C0D800EDCE8ED0A942CBA6271A1044F90C30BA8FE91E1C163"))), 1,
-Crypto.util.hexToBytes("1B1FE8F5A911CD4C0D800EDCE8ED0A942CBA6271A1044F90C30BA8FE91E1C163"))
-);*/
