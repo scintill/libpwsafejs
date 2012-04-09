@@ -1,6 +1,6 @@
 function PWSafeDB(buffer) {
     if (((typeof ArrayBuffer !== 'undefined') && (buffer instanceof ArrayBuffer)) || typeof buffer == 'string') {
-        this._buffer = buffer;
+        this.buffer = buffer;
     } else if (buffer instanceof Object) {
         // allow "casting" after de-JSON from the worker
         this.records = buffer.records;
@@ -45,39 +45,39 @@ PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
 PWSafeDB.prototype.BLOCK_SIZE = 16;
 
 PWSafeDB.prototype.decrypt = function(passphrase, callback) {
-    this._view = new jDataView(this._buffer, undefined, undefined, true /* little-endian */);
+    this.view = new jDataView(this.buffer, undefined, undefined, true /* little-endian */);
 
-    this._chunkWork(function() {
+    this.chunkWork(function() {
 
-        var valid = this._validateFile();
+        var valid = this.validateFile();
         if (typeof valid == "string") {
             callback(valid);
             return; // <----
         }
 
-        var keys = this._getDecryptionKeys(passphrase);
+        var keys = this.getDecryptionKeys(passphrase);
         if (typeof keys == "string") {
             callback(keys);
             return; // <----
         }
 
-        var recordView = this._decryptRecords(keys);
+        var recordView = this.decryptRecords(keys);
         if (typeof recordView == "string") {
             callback(recordView);
             return; // <----
         }
 
-        this._chunkWork(function() {
+        this.chunkWork(function() {
 
-            this._readAllRecords(recordView);
+            this.readAllRecords(recordView);
 
-            this._chunkWork(function() {
+            this.chunkWork(function() {
 
-                this._verifyHMAC(keys, (function(pdb) { return function(matched) {
+                this.verifyHMAC(keys, (function(pdb) { return function(matched) {
                     // clean up raw data
                     try {
-                        delete this._view;
-                        delete this._eofMarkerPos;
+                        delete this.view;
+                        delete this.eofMarkerPos;
                     } catch(e) {} // IE has problems with these deletes -- not sure why
                     if (!matched) {
                         callback("HMAC didn't match -- something may be corrupted");
@@ -92,16 +92,16 @@ PWSafeDB.prototype.decrypt = function(passphrase, callback) {
     });
 };
 
-PWSafeDB.prototype._validateFile = function() {
-    if (this._getString(this._view, 4) != "PWS3") {
+PWSafeDB.prototype.validateFile = function() {
+    if (this.getString(this.view, 4) != "PWS3") {
         return "Not a PWS v3 file";
     }
 
-    this._eofMarkerPos = this._view.byteLength - 32 - this.BLOCK_SIZE;
+    this.eofMarkerPos = this.view.byteLength - 32 - this.BLOCK_SIZE;
 
     var eofMarker = null;
-    if (this._eofMarkerPos > 0) {
-        eofMarker = this._getString(this._view, this.BLOCK_SIZE, this._eofMarkerPos);
+    if (this.eofMarkerPos > 0) {
+        eofMarker = this.getString(this.view, this.BLOCK_SIZE, this.eofMarkerPos);
     }
 
     if (eofMarker != "PWS3-EOFPWS3-EOF") {
@@ -111,46 +111,46 @@ PWSafeDB.prototype._validateFile = function() {
     return true;
 };
 
-PWSafeDB.prototype._decryptRecords = function(keys) {
-    if (((this._eofMarkerPos - this._view.tell()) % this.BLOCK_SIZE) != 0) {
+PWSafeDB.prototype.decryptRecords = function(keys) {
+    if (((this.eofMarkerPos - this.view.tell()) % this.BLOCK_SIZE) != 0) {
         return "EOF marker not aligned on block boundary?";
     }
-    var numRecordBlocks = (this._eofMarkerPos - this._view.tell()) / this.BLOCK_SIZE;
+    var numRecordBlocks = (this.eofMarkerPos - this.view.tell()) / this.BLOCK_SIZE;
     
-    return this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numRecordBlocks, keys.K, true));
+    return this.dataViewFromPlaintext(TwoFish.decrypt(this.view, numRecordBlocks, keys.K, true));
 };
 
-PWSafeDB.prototype._readAllRecords = function(recordView) {
+PWSafeDB.prototype.readAllRecords = function(recordView) {
     // prepare the hash of plaintext fields
-    this._isHashing = false;
-    this._hashBytes = [];
+    this.isHashing = false;
+    this.hashBytes = [];
 
     // read all fields
-    this._parseHeaders(recordView);
-    this.records = this._parseRecords(recordView);
+    this.parseHeaders(recordView);
+    this.records = this.parseRecords(recordView);
 };
 
-PWSafeDB.prototype._verifyHMAC = function(keys, callback) {
+PWSafeDB.prototype.verifyHMAC = function(keys, callback) {
     // check hash of plaintext fields
-    this._view.seek(this._eofMarkerPos+this.BLOCK_SIZE);
-    var expectedHMAC = this._getHexStringFromBytes(this._view, 32);
+    this.view.seek(this.eofMarkerPos+this.BLOCK_SIZE);
+    var expectedHMAC = this.getHexStringFromBytes(this.view, 32);
 
     if (PWSafeDB.isWebWorker) {
-        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asHex: true});
+        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this.hashBytes, keys.L, {asHex: true});
         callback(expectedHMAC === actualHMAC);
     } else {
-        Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asHex: true, callback: function(actualHMAC) {
+        Crypto.HMAC(Crypto.SHA256, this.hashBytes, keys.L, {asHex: true, callback: function(actualHMAC) {
             callback(expectedHMAC === actualHMAC);
         }});
     }
 };
 
-PWSafeDB.prototype._getDecryptionKeys = function(passphrase) {
+PWSafeDB.prototype.getDecryptionKeys = function(passphrase) {
     // validate password and stretch it to get the decryption key
-    var salt = this._getByteArray(this._view, 32, 4);
-    var iter = this._view.getUint32();
-    var expectedStretchedKeyHash = this._getHexStringFromBytes(this._view, 32);
-    var stretchedKey = this._stretchKeySHA256(
+    var salt = this.getByteArray(this.view, 32, 4);
+    var iter = this.view.getUint32();
+    var expectedStretchedKeyHash = this.getHexStringFromBytes(this.view, 32);
+    var stretchedKey = this.stretchKeySHA256(
             Crypto.charenc.Binary.stringToBytes(passphrase), salt, iter);
     var stretchedKeyHash = Crypto.SHA256(stretchedKey);
 
@@ -158,10 +158,10 @@ PWSafeDB.prototype._getDecryptionKeys = function(passphrase) {
         return "Incorrect password";
     }
 
-    var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
+    var keyView = this.dataViewFromPlaintext(TwoFish.decrypt(this.view, 4, stretchedKey));
     var keys = {};
-    keys.K = this._getByteArray(keyView, 32);
-    keys.L = this._getByteArray(keyView, 32);
+    keys.K = this.getByteArray(keyView, 32);
+    keys.L = this.getByteArray(keyView, 32);
 
     return keys;
 };
@@ -172,14 +172,14 @@ PWSafeDB.prototype.sortRecordsByTitle = function() {
     });
 };
 
-PWSafeDB.prototype._parseHeaders = function(recordView) {
+PWSafeDB.prototype.parseHeaders = function(recordView) {
     var field = undefined;
     while(field === undefined || field.type != 0xff) {
         if (recordView.tell() >= recordView.byteLength) {
             break; // <-----
         }
 
-        var field = this._readField(recordView, true);
+        var field = this.readField(recordView, true);
         switch(field.type) {
         case 0xff: // END
             break;
@@ -189,11 +189,11 @@ PWSafeDB.prototype._parseHeaders = function(recordView) {
     }
 };
 
-PWSafeDB.prototype._parseRecords = function(recordView) {
+PWSafeDB.prototype.parseRecords = function(recordView) {
     var currentRecord = {};
     var records = [];
     while (recordView.tell() < recordView.byteLength) {
-        var field = this._readField(recordView);
+        var field = this.readField(recordView);
         switch(field.type) {
         case 0x03: // Title
             currentRecord.title = field.valueStr;
@@ -221,7 +221,7 @@ PWSafeDB.prototype._parseRecords = function(recordView) {
     return records;
 };
 
-PWSafeDB.prototype._readField = function(view, isHeader) {
+PWSafeDB.prototype.readField = function(view, isHeader) {
     isHeader = !!isHeader; // boolify undefined into false
 
     var fieldSize = view.getUint32();
@@ -229,28 +229,28 @@ PWSafeDB.prototype._readField = function(view, isHeader) {
         isHeader: isHeader,
         type: view.getUint8()
     };
-    var bytes = this._getByteArray(view, fieldSize);
+    var bytes = this.getByteArray(view, fieldSize);
     // TODO figure out best way to handle non-string fields?
     field.valueStr = Crypto.charenc.Binary.bytesToString(bytes);
-    this._updateHash(bytes, field);
+    this.updateHash(bytes, field);
 
-    this._alignToBlockBoundary(view);
+    this.alignToBlockBoundary(view);
 
     return field;
 };
 
-PWSafeDB.prototype._dataViewFromPlaintext = function(buffer) {
+PWSafeDB.prototype.dataViewFromPlaintext = function(buffer) {
     return new jDataView(jDataView.createBuffer.apply(null, buffer), undefined, undefined, true /* little-endian */);
 };
 
-PWSafeDB.prototype._alignToBlockBoundary = function(view) {
+PWSafeDB.prototype.alignToBlockBoundary = function(view) {
     var off = view.tell() % this.BLOCK_SIZE;
     if (off) {
         view.seek(view.tell() + this.BLOCK_SIZE - off);
     }
 };
 
-PWSafeDB.prototype._stretchKeySHA256 = function(key, salt, iter) {
+PWSafeDB.prototype.stretchKeySHA256 = function(key, salt, iter) {
     key = key.concat(salt);
     for (var i = iter; i >= 0; i--) {
         key = Crypto.SHA256(key, {asBytes: true });
@@ -258,11 +258,11 @@ PWSafeDB.prototype._stretchKeySHA256 = function(key, salt, iter) {
     return key;
 };
 
-PWSafeDB.prototype._getHexStringFromBytes = function(view, byteCount) {
-    return Crypto.util.bytesToHex(this._getByteArray(view, byteCount));
+PWSafeDB.prototype.getHexStringFromBytes = function(view, byteCount) {
+    return Crypto.util.bytesToHex(this.getByteArray(view, byteCount));
 };
 
-PWSafeDB.prototype._getByteArray = function(view, byteCount, offset) {
+PWSafeDB.prototype.getByteArray = function(view, byteCount, offset) {
     if (offset !== undefined) {
         view.seek(offset);
     }
@@ -273,22 +273,22 @@ PWSafeDB.prototype._getByteArray = function(view, byteCount, offset) {
     return bytes;
 };
 
-PWSafeDB.prototype._getString = function(view, length, offset) {
-    var bytes = this._getByteArray(view, length, offset);
+PWSafeDB.prototype.getString = function(view, length, offset) {
+    var bytes = this.getByteArray(view, length, offset);
     return Crypto.charenc.Binary.bytesToString(bytes);
 };
 
-PWSafeDB.prototype._updateHash = function(bytes, field) {
+PWSafeDB.prototype.updateHash = function(bytes, field) {
     if (field.isHeader && field.type == 0x00) {
-        this._isHashing = true;
+        this.isHashing = true;
     }
 
-    if (this._isHashing) {
-        this._hashBytes = this._hashBytes.concat(bytes);                 
+    if (this.isHashing) {
+        this.hashBytes = this.hashBytes.concat(bytes);                 
     }
 };
 
-PWSafeDB.prototype._chunkWork = function(chunkFunc) {
+PWSafeDB.prototype.chunkWork = function(chunkFunc) {
     if (PWSafeDB.isWebWorker) {
         chunkFunc.apply(this);
     } else {
