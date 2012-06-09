@@ -3,4 +3,4 @@
 	url = https://github.com/pivotal/jasmine.git
 [submodule "jDataView"]
 	path = jDataView
-	url = https://github.com/vjeux/jDataView.git
+	url = https://github.com/scintill/jDataView.git
