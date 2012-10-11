@@ -8,7 +8,7 @@ function PWSafeDB(buffer) {
 }
 
 
-// am I running inside of a web worker?
+// am I a web worker?
 PWSafeDB.isWebWorker = typeof importScripts != 'undefined';
 
 PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
@@ -74,10 +74,12 @@ PWSafeDB.prototype.decrypt = function(passphrase, callback) {
             this.chunkWork(function() {
 
                 this.verifyHMAC(keys, (function(pdb) { return function(matched) {
-                    // clean up raw data
+                    // clean up raw data -- some of it won't be passable through worker interface, and there's no need for it anyway
                     try {
-                        delete this.view;
-                        delete this.eofMarkerPos;
+                        delete pdb.buffer;
+                        delete pdb.eofMarkerPos;
+                        delete pdb.isHashing;
+                        delete pdb.view;
                     } catch(e) {} // IE has problems with these deletes -- not sure why
                     if (!matched) {
                         callback("HMAC didn't match -- something may be corrupted");
@@ -240,7 +242,7 @@ PWSafeDB.prototype.readField = function(view, isHeader) {
 };
 
 PWSafeDB.prototype.dataViewFromPlaintext = function(buffer) {
-    return new jDataView(jDataView.createBuffer.apply(null, buffer), undefined, undefined, true /* little-endian */);
+    return new jDataView(jDataView.createBuffer(buffer), undefined, undefined, true /* little-endian */);
 };
 
 PWSafeDB.prototype.alignToBlockBoundary = function(view) {
