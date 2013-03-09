@@ -3,7 +3,7 @@ describe('Twofish decryption', function() {
     for (var i in vkvectors) {
         (function(ct, key) {
             it('decrypts '+ct+' with key '+key+' (VK)', function() {
-                var result = TwoFish.decrypt(new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes(ct))), 1, Crypto.util.hexToBytes(key));
+                var result = TwoFish.decrypt(new jDataView(jDataView.createBuffer(Crypto.util.hexToBytes(ct)), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
                 result = Crypto.util.bytesToHex(result);
                 expect(result).toEqual('00000000000000000000000000000000');
             });
@@ -15,7 +15,7 @@ describe('Twofish decryption', function() {
             for (var i in vtvectors[key]) {
                 (function(ct, pt) {
                     it('decrypts '+ct+' to '+pt+' (VT)', function() {
-                        var result = TwoFish.decrypt(new jDataView(jDataView.createBuffer.apply(null, Crypto.util.hexToBytes(ct))), 1, Crypto.util.hexToBytes(key));
+                        var result = TwoFish.decrypt(new jDataView(jDataView.createBuffer(Crypto.util.hexToBytes(ct)), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
                         result = Crypto.util.bytesToHex(result);
                         expect(result.toUpperCase()).toEqual(pt);
                     });

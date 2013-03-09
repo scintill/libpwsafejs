@@ -64,7 +64,7 @@ describe('Password Safe Database Reader', function() {
         });
     };
 
-    allTests(false, "");
+    allTests(false, " (worker if avail)");
     if (window.Worker) {
         allTests(true, " (non-worker)");
     }
