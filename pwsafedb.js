@@ -1,201 +1,190 @@
-function PWSafeDB(buffer) {
-    if (((typeof ArrayBuffer !== 'undefined') && (buffer instanceof ArrayBuffer)) || typeof buffer == 'string') {
-        this.buffer = buffer;
-    } else if (buffer instanceof Object) {
-        // allow "casting" after de-JSON from the worker
-        this.records = buffer.records;
-    }
-}
+function PWSafeDB() {}
+
+// constants
+PWSafeDB.isWebWorker = typeof importScripts != 'undefined'; // am I a web worker?
+PWSafeDB.BLOCK_SIZE = 16;
 
 
-// am I a web worker?
-PWSafeDB.isWebWorker = typeof importScripts != 'undefined';
-
-PWSafeDB.downloadAndDecrypt = function(url, key, callback, forceNoWorker) {
+// Load and return a database from the given url and passphrase
+PWSafeDB.downloadAndDecrypt = function(url, passphrase, callback, forceNoWorker) {
     var useWebWorker = !forceNoWorker && window.Worker;
 
     jQuery.ajax({
         url: url,
         dataType: 'dataview',
         cache: false,
-        success: function(view) {
+        success: function(dataview) {
             if (useWebWorker) {
                 var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
                 worker.onmessage = function(event) {
-                    if (typeof event.data == 'string') {
-                        callback(event.data);
-                    } else {
-                        callback(new PWSafeDB(event.data));
+                    var result = new window[event.data.type]();
+                    for (var k in event.data) {
+                        if (k != 'type') {
+                            result[k] = event.data[k];
+                        }
                     }
+                    callback(result); return;
                 };
 
-                // Chrome (at least) had problems passing the whole jDataView to the worker
-                worker.postMessage({buffer: view.buffer, key: key});
+                // we discard this jDataView because we need to set endianness
+                worker.postMessage({buffer: dataview.buffer, passphrase: passphrase});
             } else {
-                new PWSafeDB(view.buffer).decrypt(key, function(pdb) { callback(pdb); });
+                try {
+                    new PWSafeDB()._decrypt(dataview.buffer, passphrase, function(pdb) { callback(pdb); return; });
+                } catch (e) {
+                    callback(e); return;
+                }
             }
         },
         error: function(jqXHR, textStatus) {
-            callback("AJAX error. Status: "+textStatus);
+            callback(new Error("AJAX error. Status: "+textStatus)); return;
         }
     });
-}
-
-
-PWSafeDB.prototype.BLOCK_SIZE = 16;
-
-PWSafeDB.prototype.decrypt = function(passphrase, callback) {
-    this.view = new jDataView(this.buffer, undefined, undefined, true /* little-endian */);
-
-    this.chunkWork(function() {
-
-        var valid = this.validateFile();
-        if (typeof valid == "string") {
-            callback(valid);
-            return; // <----
-        }
-
-        var keys = this.getDecryptionKeys(passphrase);
-        if (typeof keys == "string") {
-            callback(keys);
-            return; // <----
-        }
-
-        var recordView = this.decryptRecords(keys);
-        if (typeof recordView == "string") {
-            callback(recordView);
-            return; // <----
-        }
-
-        this.chunkWork(function() {
-
-            this.readAllRecords(recordView);
-
-            this.chunkWork(function() {
-
-                this.verifyHMAC(keys, (function(pdb) { return function(matched) {
-                    // clean up raw data -- some of it won't be passable through worker interface, and there's no need for it anyway
-                    try {
-                        delete pdb.buffer;
-                        delete pdb.eofMarkerPos;
-                        delete pdb.isHashing;
-                        delete pdb.view;
-                    } catch(e) {} // IE has problems with these deletes -- not sure why
-                    if (!matched) {
-                        callback("HMAC didn't match -- something may be corrupted");
-                        return; // <----
-                    } else {
-                        callback(pdb);
-                        return; // <----
-                    }
-                }; })(this));
-            });
-        });
-    });
 };
 
-PWSafeDB.prototype.validateFile = function() {
-    if (this.getString(this.view, 4) != "PWS3") {
-        return "Not a PWS v3 file";
+(function(prototype) {
+    for (var k in prototype) {
+        PWSafeDB.prototype[k] = prototype[k];
     }
+})({
 
-    this.eofMarkerPos = this.view.byteLength - 32 - this.BLOCK_SIZE;
-
-    var eofMarker = null;
-    if (this.eofMarkerPos > 0) {
-        eofMarker = this.getString(this.view, this.BLOCK_SIZE, this.eofMarkerPos);
-    }
-
-    if (eofMarker != "PWS3-EOFPWS3-EOF") {
-        return "No EOF marker found - not a valid v3 file, or it's corrupted";
-    }
-
-    return true;
-};
-
-PWSafeDB.prototype.decryptRecords = function(keys) {
-    if (((this.eofMarkerPos - this.view.tell()) % this.BLOCK_SIZE) != 0) {
-        return "EOF marker not aligned on block boundary?";
-    }
-    var numRecordBlocks = (this.eofMarkerPos - this.view.tell()) / this.BLOCK_SIZE;
-    
-    return this.dataViewFromPlaintext(TwoFish.decrypt(this.view, numRecordBlocks, keys.K, true));
-};
-
-PWSafeDB.prototype.readAllRecords = function(recordView) {
-    // prepare the hash of plaintext fields
-    this.isHashing = false;
-    this.hashBytes = [];
-
-    // read all fields
-    this.parseHeaders(recordView);
-    this.records = this.parseRecords(recordView);
-};
-
-PWSafeDB.prototype.verifyHMAC = function(keys, callback) {
-    // check hash of plaintext fields
-    this.view.seek(this.eofMarkerPos+this.BLOCK_SIZE);
-    var expectedHMAC = this.getHexStringFromBytes(this.view, 32);
-
-    if (PWSafeDB.isWebWorker) {
-        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this.hashBytes, keys.L, {asHex: true});
-        callback(expectedHMAC === actualHMAC);
-    } else {
-        Crypto.HMAC(Crypto.SHA256, this.hashBytes, keys.L, {asHex: true, callback: function(actualHMAC) {
-            callback(expectedHMAC === actualHMAC);
-        }});
-    }
-};
-
-PWSafeDB.prototype.getDecryptionKeys = function(passphrase) {
-    // validate password and stretch it to get the decryption key
-    var salt = this.getByteArray(this.view, 32, 4);
-    var iter = this.view.getUint32();
-    var expectedStretchedKeyHash = this.getHexStringFromBytes(this.view, 32);
-    var stretchedKey = this.stretchKeySHA256(
-            Crypto.charenc.Binary.stringToBytes(passphrase), salt, iter);
-    var stretchedKeyHash = Crypto.SHA256(stretchedKey);
-
-    if (expectedStretchedKeyHash !== stretchedKeyHash) {
-        return "Incorrect password";
-    }
-
-    var keyView = this.dataViewFromPlaintext(TwoFish.decrypt(this.view, 4, stretchedKey));
-    var keys = {};
-    keys.K = this.getByteArray(keyView, 32);
-    keys.L = this.getByteArray(keyView, 32);
-
-    return keys;
-};
-
-PWSafeDB.prototype.sortRecordsByTitle = function() {
+sortRecordsByTitle: function() {
     this.records = this.records.sort(function(a, b) {
         return a.title.toLocaleLowerCase().localeCompare(b.title.toLocaleLowerCase());
     });
-};
+},
 
-PWSafeDB.prototype.parseHeaders = function(recordView) {
-    var field = undefined;
+_decrypt: function(buffer, passphrase, callback) {
+    this._view = new jDataView(buffer, undefined, undefined, true /* little-endian */);
+
+    this._chunkWork(function() {
+        this._validateFile();
+        var keys = this._getDecryptionKeys(passphrase);
+        if (keys === false) {
+            throw new Error("Incorrect passphrase");
+        }
+        var fieldView = this._decryptFields(keys);
+
+        this._chunkWork(function() {
+
+            this._readAllRecords(fieldView);
+
+            this._chunkWork(function() {
+
+                this._verifyHMAC(keys, (function(pdb) { return function(matched) {
+                    // clean up raw data -- some of it won't be passable through worker interface, and there's no need for it anyway
+                    try {
+                        delete pdb._eofMarkerPos;
+                        delete pdb._hashBytes;
+                        delete pdb._isHashing;
+                        delete pdb._view;
+                    } catch(e) {} // IE has problems with these deletes -- not sure why
+
+                    if (!matched) {
+                        callback(new Error("HMAC didn't match -- something may be corrupted"));
+                    } else {
+                        callback(pdb); return;
+                    }
+                }; })(this));
+
+            }, callback);
+        }, callback);
+    }, callback);
+},
+
+_validateFile: function() {
+    if (this._getBinaryString(this._view, 4) != "PWS3") {
+        throw new Error("Not a PWS v3 file");
+    }
+
+    this._eofMarkerPos = this._view.byteLength - 32 - PWSafeDB.BLOCK_SIZE;
+
+    var eofMarker = null;
+    if (this._eofMarkerPos > 0) {
+        eofMarker = this._getBinaryString(this._view, PWSafeDB.BLOCK_SIZE, this._eofMarkerPos);
+    }
+
+    if (eofMarker != "PWS3-EOFPWS3-EOF") {
+        throw new Error("No EOF marker found - not a valid v3 file, or it's corrupted");
+    }
+
+    return true;
+},
+
+_decryptFields: function(keys) {
+    if (((this._eofMarkerPos - this._view.tell()) % PWSafeDB.BLOCK_SIZE) !== 0) {
+        throw new Error("EOF marker not aligned on block boundary?");
+    }
+    var numFieldBlocks = (this._eofMarkerPos - this._view.tell()) / PWSafeDB.BLOCK_SIZE;
+
+    return this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numFieldBlocks, keys.K, true));
+},
+
+_readAllRecords: function(fieldView) {
+    // prepare the hash of plaintext fields
+    this._isHashing = false;
+    this._hashBytes = [];
+
+    // read all fields
+    this._parseHeaders(fieldView);
+    this.records = this._parseRecords(fieldView);
+},
+
+// check hash of plaintext fields
+_verifyHMAC: function(keys, callback) {
+    var expectedHMAC = this._getBinaryString(this._view, 32, this._eofMarkerPos + PWSafeDB.BLOCK_SIZE);
+
+    if (PWSafeDB.isWebWorker) {
+        var actualHMAC = Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asString: true});
+        callback(expectedHMAC === actualHMAC); return;
+    } else {
+        Crypto.HMAC(Crypto.SHA256, this._hashBytes, keys.L, {asString: true, callback: function(actualHMAC) {
+            callback(expectedHMAC === actualHMAC); return;
+        }});
+    }
+},
+
+// validate password and stretch it to get the decryption key
+_getDecryptionKeys: function(passphrase) {
+    var salt = this._getByteArray(this._view, 32, 4);
+    var iter = this._view.getUint32();
+    var expectedStretchedKeyHash = this._getBinaryString(this._view, 32);
+    var stretchedKey = this._stretchKeySHA256(Crypto.charenc.UTF8.stringToBytes(passphrase), salt, iter);
+    var stretchedKeyHash = Crypto.SHA256(stretchedKey, {asString: true});
+
+    if (expectedStretchedKeyHash !== stretchedKeyHash) {
+        return false;
+    }
+
+    var keyView = this._dataViewFromPlaintext(TwoFish.decrypt(this._view, 4, stretchedKey));
+    var keys = {};
+    keys.K = this._getByteArray(keyView, 32);
+    keys.L = this._getByteArray(keyView, 32);
+
+    return keys;
+},
+
+_parseHeaders: function(fieldView) {
+    var field;
     while(field === undefined || field.type != 0xff) {
-        if (recordView.tell() >= recordView.byteLength) {
+        if (fieldView.tell() >= fieldView.byteLength) {
             break; // <-----
         }
 
-        var field = this.readField(recordView, true);
-        switch(field.type) {
-        case 0xff: // END
+        field = this._readField(fieldView, true);
+        if (field.type == 0xff) {
             break;
-        default: // unknown or unimportant
-            // updateHash handles all I care about for the version number record -- that is, where it is, for the HMAC verify
+        } else { // unknown or unimportant
+            // updateHash() handles all I care about for the version number record -- that is, where it is, for the HMAC verify
         }
     }
-};
+},
 
-PWSafeDB.prototype.parseRecords = function(recordView) {
+_parseRecords: function(fieldView) {
     var currentRecord = {};
     var records = [];
-    while (recordView.tell() < recordView.byteLength) {
-        var field = this.readField(recordView);
+    while (fieldView.tell() < fieldView.byteLength) {
+        var field = this._readField(fieldView);
         switch(field.type) {
         case 0x03: // Title
             currentRecord.title = field.valueStr;
@@ -221,9 +210,9 @@ PWSafeDB.prototype.parseRecords = function(recordView) {
     }
 
     return records;
-};
+},
 
-PWSafeDB.prototype.readField = function(view, isHeader) {
+_readField: function(view, isHeader) {
     isHeader = !!isHeader; // boolify undefined into false
 
     var fieldSize = view.getUint32();
@@ -231,40 +220,40 @@ PWSafeDB.prototype.readField = function(view, isHeader) {
         isHeader: isHeader,
         type: view.getUint8()
     };
-    var bytes = this.getByteArray(view, fieldSize);
-    // TODO figure out best way to handle non-string fields?
-    field.valueStr = Crypto.charenc.Binary.bytesToString(bytes);
-    this.updateHash(bytes, field);
+    var bytes = this._getByteArray(view, fieldSize);
+    // TODO handle non-string fields
+    try {
+        field.valueStr = Crypto.charenc.UTF8.bytesToString(bytes);
+    } catch (e) {
+        // probably a UTF-8 decoding error, which is probably because this field isn't really a string
+    }
+    this._updateHash(bytes, field);
 
-    this.alignToBlockBoundary(view);
+    this._alignToBlockBoundary(view);
 
     return field;
-};
+},
 
-PWSafeDB.prototype.dataViewFromPlaintext = function(buffer) {
+_dataViewFromPlaintext: function(buffer) {
     return new jDataView(jDataView.createBuffer(buffer), undefined, undefined, true /* little-endian */);
-};
+},
 
-PWSafeDB.prototype.alignToBlockBoundary = function(view) {
-    var off = view.tell() % this.BLOCK_SIZE;
+_alignToBlockBoundary: function(view) {
+    var off = view.tell() % PWSafeDB.BLOCK_SIZE;
     if (off) {
-        view.seek(view.tell() + this.BLOCK_SIZE - off);
+        view.seek(view.tell() + PWSafeDB.BLOCK_SIZE - off);
     }
-};
+},
 
-PWSafeDB.prototype.stretchKeySHA256 = function(key, salt, iter) {
+_stretchKeySHA256: function(key, salt, iter) {
     key = key.concat(salt);
     for (var i = iter; i >= 0; i--) {
         key = Crypto.SHA256(key, {asBytes: true });
     }
     return key;
-};
+},
 
-PWSafeDB.prototype.getHexStringFromBytes = function(view, byteCount) {
-    return Crypto.util.bytesToHex(this.getByteArray(view, byteCount));
-};
-
-PWSafeDB.prototype.getByteArray = function(view, byteCount, offset) {
+_getByteArray: function(view, byteCount, offset) {
     if (offset !== undefined) {
         view.seek(offset);
     }
@@ -273,44 +262,66 @@ PWSafeDB.prototype.getByteArray = function(view, byteCount, offset) {
         bytes[i] = view.getUint8();
     }
     return bytes;
-};
+},
 
-PWSafeDB.prototype.getString = function(view, length, offset) {
-    var bytes = this.getByteArray(view, length, offset);
+_getBinaryString: function(view, length, offset) {
+    var bytes = this._getByteArray(view, length, offset);
     return Crypto.charenc.Binary.bytesToString(bytes);
-};
+},
 
-PWSafeDB.prototype.updateHash = function(bytes, field) {
-    if (field.isHeader && field.type == 0x00) {
-        this.isHashing = true;
+_updateHash: function(bytes, field) {
+    if (field.isHeader && field.type === 0x00) {
+        this._isHashing = true;
     }
 
-    if (this.isHashing) {
-        this.hashBytes = this.hashBytes.concat(bytes);                 
+    if (this._isHashing) {
+        for (var i in bytes) {
+            this._hashBytes.push(bytes[i]);
+        }
     }
-};
+},
 
-PWSafeDB.prototype.chunkWork = function(chunkFunc) {
+_chunkWork: function(chunkFunc, exceptionHandler) {
     if (PWSafeDB.isWebWorker) {
-        chunkFunc.apply(this);
+        try {
+            chunkFunc.apply(this);
+        } catch (e) {
+            exceptionHandler(e);
+        }
     } else {
         var thiz = this;
         window.setTimeout(function() {
-            return chunkFunc.apply(thiz);
+            try {
+                return chunkFunc.apply(thiz);
+            } catch (e) {
+                exceptionHandler(e);
+            }
         }, 1);
     }
-};
+}
+
+});
 
 
-// Web Worker interface
+// If inside web worker, load scripts and message handler
 if (PWSafeDB.isWebWorker) {
     importScripts('jDataView/src/jdataview.js', 'crypto-sha256-hmac.js', 'twofish.js');
 
     onmessage = function(event) {
         var data = event.data;
-        new PWSafeDB(data.buffer).decrypt(data.key, function(result) {
-            postMessage(result);
-        });
-    };
+        var callback = function(result) {
+            if (result instanceof Error) {
+                // getting clone error trying to pass it directly
+                postMessage({type: result.name, message: result.message, name: result.name, stack: result.stack});
+            } else {
+                postMessage({type: "PWSafeDB", records: result.records});
+            }
+        };
 
+        try {
+            new PWSafeDB()._decrypt(data.buffer, data.passphrase, callback);
+        } catch (e) {
+            callback(e); return;
+        }
+    };
 }
