@@ -48,6 +48,10 @@ describe('Password Safe Database Reader', function() {
 
         expect(recs.length).toEqual(expRecords.length);
         for (var k in expRecords) {
+            expect(recs[k]).toNotEqual(undefined);
+            delete recs[k].createTime;
+            delete recs[k].modifyTime;
+            delete recs[k].uuid; // don't compare these
             expect(recs[k]).toEqual(expRecords[k]);
         }
     };

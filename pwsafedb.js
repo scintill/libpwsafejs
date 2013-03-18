@@ -6,8 +6,12 @@ PWSafeDB.BLOCK_SIZE = 16;
 
 
 // Load and return a database from the given url and passphrase
-PWSafeDB.downloadAndDecrypt = function(url, passphrase, callback, forceNoWorker) {
-    var useWebWorker = !forceNoWorker && window.Worker;
+PWSafeDB.downloadAndDecrypt = function(url, passphrase, callback, options) {
+    if (options === undefined) {
+        options = {};
+    }
+
+    var useWebWorker = !options.forceNoWorker && window.Worker;
 
     jQuery.ajax({
         url: url,
@@ -17,7 +21,8 @@ PWSafeDB.downloadAndDecrypt = function(url, passphrase, callback, forceNoWorker)
             if (useWebWorker) {
                 var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
                 worker.onmessage = function(event) {
-                    var result = new window[event.data.type]();
+                    var ctor = window[event.data.type] || Error;
+                    var result = new ctor();
                     for (var k in event.data) {
                         if (k != 'type') {
                             result[k] = event.data[k];
@@ -27,10 +32,10 @@ PWSafeDB.downloadAndDecrypt = function(url, passphrase, callback, forceNoWorker)
                 };
 
                 // we discard this jDataView because we need to set endianness
-                worker.postMessage({buffer: dataview.buffer, passphrase: passphrase});
+                worker.postMessage({buffer: dataview.buffer, passphrase: passphrase, options: options});
             } else {
                 try {
-                    new PWSafeDB()._decrypt(dataview.buffer, passphrase, function(pdb) { callback(pdb); return; });
+                    new PWSafeDB()._decrypt(dataview.buffer, passphrase, options, function(pdb) { callback(pdb); return; });
                 } catch (e) {
                     callback(e); return;
                 }
@@ -42,11 +47,13 @@ PWSafeDB.downloadAndDecrypt = function(url, passphrase, callback, forceNoWorker)
     });
 };
 
-(function(prototype) {
-    for (var k in prototype) {
-        PWSafeDB.prototype[k] = prototype[k];
+PWSafeDB.extend = function(targetOb, properties) {
+    for (var k in properties) {
+        targetOb[k] = properties[k];
     }
-})({
+};
+
+PWSafeDB.extend(PWSafeDB.prototype, {
 
 sortRecordsByTitle: function() {
     this.records = this.records.sort(function(a, b) {
@@ -54,7 +61,7 @@ sortRecordsByTitle: function() {
     });
 },
 
-_decrypt: function(buffer, passphrase, callback) {
+_decrypt: function(buffer, passphrase, options, callback) {
     this._view = new jDataView(buffer, undefined, undefined, true /* little-endian */);
 
     this._chunkWork(function() {
@@ -67,7 +74,7 @@ _decrypt: function(buffer, passphrase, callback) {
 
         this._chunkWork(function() {
 
-            this._readAllRecords(fieldView);
+            this._readAllRecords(fieldView, options.strictFieldTypeCheck);
 
             this._chunkWork(function() {
 
@@ -120,14 +127,14 @@ _decryptFields: function(keys) {
     return this._dataViewFromPlaintext(TwoFish.decrypt(this._view, numFieldBlocks, keys.K, true));
 },
 
-_readAllRecords: function(fieldView) {
+_readAllRecords: function(fieldView, strictFieldType) {
     // prepare the hash of plaintext fields
     this._isHashing = false;
     this._hashBytes = [];
 
     // read all fields
-    this._parseHeaders(fieldView);
-    this.records = this._parseRecords(fieldView);
+    this.headers = this._parseHeaders(fieldView, strictFieldType);
+    this.records = this._parseRecords(fieldView, strictFieldType);
 },
 
 // check hash of plaintext fields
@@ -164,48 +171,157 @@ _getDecryptionKeys: function(passphrase) {
     return keys;
 },
 
-_parseHeaders: function(fieldView) {
+_parseHeaders: function(fieldView, strictFieldType) {
     var field;
+    var headers = {};
+
     while(field === undefined || field.type != 0xff) {
         if (fieldView.tell() >= fieldView.byteLength) {
             break; // <-----
         }
 
         field = this._readField(fieldView, true);
-        if (field.type == 0xff) {
+        switch (field.type) {
+        case 0xff: // end
             break;
-        } else { // unknown or unimportant
-            // updateHash() handles all I care about for the version number record -- that is, where it is, for the HMAC verify
+        case 0x00:
+            headers.version = field.uint16();
+            break;
+        case 0x01:
+            headers.uuid = field.uuid();
+            break;
+        case 0x02:
+            headers.nonDefaultPrefs = field.str();
+            break;
+        case 0x03:
+            headers.treeDisplayStatus = field.str();
+            break;
+        case 0x04:
+            headers.lastSaveTime = field.epochTime();
+            break;
+        case 0x06:
+            headers.lastSaveApp = field.str();
+            break;
+        case 0x07:
+            headers.lastSaveUser = field.str();
+            break;
+        case 0x08:
+            headers.lastSaveHost = field.str();
+            break;
+        case 0x0f:
+            var fieldStr = field.str();
+            var pos = 0;
+            var length = parseInt(fieldStr.substring(0, pos += 2), 16);
+            var entries = [];
+            for (var i = 0; i < length; i++) {
+                entries[i] = fieldStr.substring(pos, pos += 32);
+            }
+            headers.recentlyUsedEntries = entries;
+            break;
+        default: // unknown
+            if (strictFieldType) {
+                delete field.view;
+                throw new Error("unknown header field " + JSON.stringify(field));
+            }
         }
     }
+
+    return headers;
 },
 
-_parseRecords: function(fieldView) {
+_parseRecords: function(fieldView, strictFieldType) {
     var currentRecord = {};
     var records = [];
+
+    var fieldStr, pos;
+
     while (fieldView.tell() < fieldView.byteLength) {
         var field = this._readField(fieldView);
+
+        // I'm seeing an empty field of type zero for some reason
+        if (field.type === 0 && field.bytes.length === 0) {
+            continue; // <---
+        }
+
         switch(field.type) {
-        case 0x03: // Title
-            currentRecord.title = field.valueStr;
+        case 0x01:
+            currentRecord.uuid = field.uuid();
             break;
-        case 0x04: // Username
-            currentRecord.username = field.valueStr;
+        case 0x02:
+            currentRecord.group = field.str();
             break;
-        case 0x05: // Notes
-            currentRecord.notes = field.valueStr;
+        case 0x03:
+            currentRecord.title = field.str();
             break;
-        case 0x06: // Password
-            currentRecord.password = field.valueStr;
+        case 0x04:
+            currentRecord.username = field.str();
             break;
-        case 0x0d: // URL
-            currentRecord.URL = field.valueStr;
+        case 0x05:
+            currentRecord.notes = field.str();
+            break;
+        case 0x06:
+            currentRecord.password = field.str();
+            break;
+        case 0x07:
+            currentRecord.createTime = field.epochTime();
+            break;
+        case 0x08:
+            currentRecord.passphraseModifyTime = field.epochTime();
+            break;
+        case 0x0c:
+            currentRecord.modifyTime = field.epochTime();
+            break;
+        case 0x0d:
+            currentRecord.URL = field.str();
+            break;
+        case 0x0e:
+            currentRecord.autotype = field.str();
+            break;
+        case 0x0f:
+            fieldStr = field.str();
+            var history = {
+                isEnabled: field.bytes[0] !== 0,
+                maxSize: parseInt(fieldStr.substring(1, 3), 16),
+                currentSize: parseInt(fieldStr.substring(3, 5), 16)
+            };
+            pos = 5;
+            var passphrases = history.passphrases = [];
+            for (var i = 0; i < history.currentSize; i++) {
+                passphrases[i] = {
+                    timestamp: new Date(parseInt(fieldStr.substring(pos, pos += 8), 16) * 1000)
+                };
+                var length = parseInt(fieldStr.substring(pos, pos += 4), 16);
+                passphrases[i].passphrase = fieldStr.substring(pos, pos += length);
+            }
+            currentRecord.passphraseHistory = history;
+            break;
+        case 0x10:
+            fieldStr = field.str();
+            pos = 0;
+            currentRecord.passphrasePolicy = {
+                flags: parseInt(fieldStr.substring(pos, pos += 4), 16),
+                length: parseInt(fieldStr.substring(pos, pos += 3), 16),
+                minLowercase: parseInt(fieldStr.substring(pos, pos += 3), 16),
+                minUppercase: parseInt(fieldStr.substring(pos, pos += 3), 16),
+                minDigit: parseInt(fieldStr.substring(pos, pos += 3), 16),
+                minSymbol: parseInt(fieldStr.substring(pos, pos += 3), 16)
+            };
+            break;
+        case 0x14:
+            currentRecord.emailAddress = field.str();
+            break;
+        case 0x16:
+            currentRecord.ownPassphraseSymbols = field.str();
             break;
         case 0xff: // END
             records.push(currentRecord);
             currentRecord = {};
             break;
-        default: // unknown or unimportant
+        default: // unknown
+            if (strictFieldType) {
+                delete field.view;
+                throw new Error("unknown record field " + JSON.stringify(field));
+            }
         }
     }
 
@@ -216,19 +332,16 @@ _readField: function(view, isHeader) {
     isHeader = !!isHeader; // boolify undefined into false
 
     var fieldSize = view.getUint32();
-    var field = {
-        isHeader: isHeader,
-        type: view.getUint8()
-    };
-    var bytes = this._getByteArray(view, fieldSize);
-    // TODO handle non-string fields
-    try {
-        field.valueStr = Crypto.charenc.UTF8.bytesToString(bytes);
-    } catch (e) {
-        // probably a UTF-8 decoding error, which is probably because this field isn't really a string
+    if (view.tell() + fieldSize >= view.byteLength) {
+        throw new Error("Invalid field size -- larger than remainder of file");
     }
-    this._updateHash(bytes, field);
+    var field = new PWSafeDBField(isHeader, view.getUint8());
 
+    field.view = view;
+    field.offset = view.tell();
+    field.bytes = this._getByteArray(view, fieldSize);
+
+    this._updateHash(field);
     this._alignToBlockBoundary(view);
 
     return field;
@@ -269,14 +382,14 @@ _getBinaryString: function(view, length, offset) {
     return Crypto.charenc.Binary.bytesToString(bytes);
 },
 
-_updateHash: function(bytes, field) {
+_updateHash: function(field) {
     if (field.isHeader && field.type === 0x00) {
         this._isHashing = true;
     }
 
     if (this._isHashing) {
-        for (var i in bytes) {
-            this._hashBytes.push(bytes[i]);
+        for (var i in field.bytes) {
+            this._hashBytes.push(field.bytes[i]);
         }
     }
 },
@@ -303,6 +416,40 @@ _chunkWork: function(chunkFunc, exceptionHandler) {
 });
 
 
+
+function PWSafeDBField(isHeader, type) {
+    this.isHeader = isHeader;
+    this.type = type;
+}
+
+PWSafeDB.extend(PWSafeDBField.prototype, {
+    str: function() {
+        try {
+            return Crypto.charenc.UTF8.bytesToString(this.bytes);
+        } catch (e) {
+            if (e.constructor == URIError) {
+                throw new Error("Invalid UTF-8 encoding", e);
+            }
+            throw e;
+        }
+    },
+    uint16: function() {
+        var prevOffset = this.view.tell();
+        var n = this.view.getUint16(this.offset);
+        this.view.seek(prevOffset);
+        return n;
+    },
+    uint32: function() {
+        var prevOffset = this.view.tell();
+        var n = this.view.getUint32(this.offset);
+        this.view.seek(prevOffset);
+        return n;
+    },
+    epochTime: function() { return new Date(this.uint32() * 1000); },
+    uuid: function() { return Crypto.util.bytesToHex(this.bytes); }
+});
+
+
 // If inside web worker, load scripts and message handler
 if (PWSafeDB.isWebWorker) {
     importScripts('jDataView/src/jdataview.js', 'crypto-sha256-hmac.js', 'twofish.js');
@@ -319,7 +466,7 @@ if (PWSafeDB.isWebWorker) {
         };
 
         try {
-            new PWSafeDB()._decrypt(data.buffer, data.passphrase, callback);
+            new PWSafeDB()._decrypt(data.buffer, data.passphrase, data.options, callback);
         } catch (e) {
             callback(e); return;
         }
