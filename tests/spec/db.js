@@ -1,4 +1,4 @@
-describe('Password Safe Database Reader', function() {
+describe('Password Safe Database reader', function() {
 
     // just whose idea was it to put all this hard-to-encode garbage in a test database? (mine)
     var expRecords = [
@@ -28,7 +28,7 @@ describe('Password Safe Database Reader', function() {
         pass = pass || 'pass';
 
         runs(function() {
-            PWSafeDB.downloadAndDecrypt(url, pass, function(_pdb) { pdb = _pdb; }, forceNoWorker);
+            PWSafeDB.downloadAndDecrypt(url, pass, {forceNoWorker: forceNoWorker}, function(_pdb) { pdb = _pdb; });
         });
 
         waitsFor(function() { return pdb !== null; }, "database to load", 3000);
@@ -59,21 +59,21 @@ describe('Password Safe Database Reader', function() {
     var allTests = function(workerVal, appendString) {
         it('decrypt and parse the database records'+appendString, function() { return decrypt(workerVal, expectRecords); });
         it('report incorrect password'+appendString, function() {
-                return decrypt(workerVal, function(err) {
-                    expect(err.message).toEqual("Incorrect passphrase");
-                }, "boguspass");
+            return decrypt(workerVal, function(err) {
+                expect(err.message).toEqual("Incorrect passphrase");
+            }, "boguspass");
         });
         it('report mismatched HMAC (HMAC corrupt)'+appendString, function() {
-                return decrypt(workerVal, function(err) {
-                    expect(err.message).toEqual("HMAC didn't match -- something may be corrupted");
-                }, undefined, 'test-corrupthmac.psafe3');
+            return decrypt(workerVal, function(err) {
+                expect(err.message).toEqual("HMAC didn't match -- something may be corrupted");
+            }, undefined, 'test-corrupthmac.psafe3');
         });
         // TODO took me a few tries to corrupt something that yielded this error. thankfully nothing like
         // infinite loops happened, but maybe I should test graceful recovery from more corruption scenarios
         it('report mismatched HMAC (MAC corrupt)'+appendString, function() {
-                return decrypt(workerVal, function(err) {
-                    expect(err.message).toEqual("HMAC didn't match -- something may be corrupted");
-                }, undefined, 'test-corruptdata.psafe3');
+            return decrypt(workerVal, function(err) {
+                expect(err.message).toEqual("HMAC didn't match -- something may be corrupted");
+            }, undefined, 'test-corruptdata.psafe3');
         });
     };
 
@@ -82,4 +82,51 @@ describe('Password Safe Database Reader', function() {
         allTests(true, " (non-worker)");
     }
 
+});
+
+describe('Password Safe Database writer', function() {
+    it('load-reserialize-encrypt-load loop', function() {
+        var pdb = null;
+        var url = 'test.psafe3';
+        var pass = 'pass';
+
+        runs(function() {
+            PWSafeDB.downloadAndDecrypt(url, pass, {strictFieldTypeCheck: true}, function(_pdb) { pdb = _pdb; });
+        });
+
+        waitsFor(function() { return pdb !== null; }, "database to load", 3000);
+
+        runs(function() {
+            if (pdb instanceof Error) {
+                throw pdb;
+            }
+
+            var db2 = null;
+
+            runs(function() {
+                new PWSafeDB().decrypt(pdb.encrypt(pass), pass, {strictFieldTypeCheck: true}, function(db) { db2 = db; });
+            });
+
+            waitsFor(function() { return db2 !== null; }, 'database to decrypt', 3000);
+
+            runs(function() {
+                if (db2 instanceof Error) {
+                    throw db2;
+                }
+
+                expect(db2.headers.length).toEqual(pdb.headers.length);
+                var i, k;
+                for (k in db2.headers) {
+                    expect(db2.headers[k]).toEqual(pdb.headers[k], 'header "'+k+'" is equal');
+                }
+
+                expect(db2.records.length).toEqual(pdb.records.length);
+                for (i in db2.records) {
+                    for (k in db2.records[i]) {
+                        expect(db2.records[i][k]).toEqual(pdb.records[i][k], 'record ['+i+'].'+k+' is equal');
+                    }
+                }
+            });
+        });
+    });
 });

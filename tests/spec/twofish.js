@@ -1,11 +1,16 @@
 (function(vkvectors, vtvectors) {
-describe('Twofish decryption', function() {
+describe('Twofish crypto', function() {
     for (var i in vkvectors) {
         (function(ct, key) {
             it('decrypts '+ct+' with key '+key+' (VK)', function() {
-                var result = TwoFish.decrypt(new jDataView(jDataView.createBuffer(Crypto.util.hexToBytes(ct)), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
+                var result = TwoFish.decrypt(new jDataView(Crypto.util.hexToBytes(ct), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
                 result = Crypto.util.bytesToHex(result);
                 expect(result).toEqual('00000000000000000000000000000000');
+            });
+            it('encrypts 00000000000000000000000000000000 with key '+key+' (VK)', function() {
+                var result = TwoFish.encrypt(new jDataView(Crypto.util.hexToBytes('00000000000000000000000000000000'), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
+                result = Crypto.util.bytesToHex(result);
+                expect(result.toUpperCase()).toEqual(ct);
             });
         })(vkvectors[i].ct, vkvectors[i].key);
     }
@@ -15,9 +20,14 @@ describe('Twofish decryption', function() {
             for (var i in vtvectors[key]) {
                 (function(ct, pt) {
                     it('decrypts '+ct+' to '+pt+' (VT)', function() {
-                        var result = TwoFish.decrypt(new jDataView(jDataView.createBuffer(Crypto.util.hexToBytes(ct)), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
+                        var result = TwoFish.decrypt(new jDataView(Crypto.util.hexToBytes(ct), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
                         result = Crypto.util.bytesToHex(result);
                         expect(result.toUpperCase()).toEqual(pt);
+                    });
+                    it('encrypts '+pt+' to '+ct+' (VT)', function() {
+                        var result = TwoFish.encrypt(new jDataView(Crypto.util.hexToBytes(pt), undefined, undefined, true), 1, Crypto.util.hexToBytes(key));
+                        result = Crypto.util.bytesToHex(result);
+                        expect(result.toUpperCase()).toEqual(ct);
                     });
                 })(vtvectors[key][i].ct, vtvectors[key][i].pt);
             }
