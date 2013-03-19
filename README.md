@@ -1,6 +1,6 @@
 libpwsafejs
 ---
-This is a Javascript library for reading Password Safe database files.  It has been developed in combination with [pwsafejs](http://github.com/scintill/pwsafejs).
+This is a Javascript library for reading (and recently writing) Password Safe database files.  It has been developed in combination with [pwsafejs](http://github.com/scintill/pwsafejs).
 
 Resources
 ---
