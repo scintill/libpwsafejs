@@ -1,6 +1,3 @@
-[submodule "tests/jasmine"]
-	path = tests/jasmine
-	url = https://github.com/pivotal/jasmine.git
 [submodule "jDataView"]
 	path = jDataView
 	url = https://github.com/scintill/jDataView.git
