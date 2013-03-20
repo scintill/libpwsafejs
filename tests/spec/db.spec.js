@@ -1,6 +1,10 @@
+if (typeof window === 'undefined') { // node.js
+    var PWSafeDB = require('../../pwsafedb.js').PWSafeDB;
+}
+
 describe('Password Safe Database reader', function() {
     var forceNoWorkerVals = [false];
-    if (window && window.Worker) {
+    if (typeof window != 'undefined' && window.Worker) {
         forceNoWorkerVals.push(true);
     }
 
@@ -11,9 +15,9 @@ describe('Password Safe Database reader', function() {
 
         it('decrypts and parses the database records'+appendString, function() {
             runs(function() {
-                PWSafeDB.downloadAndDecrypt('test.psafe3', 'pass', {forceNoWorker: forceNoWorker}, function(_pdb) { pdb = _pdb; });
+                PWSafeDB.decryptFromUrl('test.psafe3', 'pass', {forceNoWorker: forceNoWorker}, function(_pdb) { pdb = _pdb; });
             });
-            waitsFor(function() { return pdb !== null; }, 'database to load', 3000);
+            waitsFor(function() { return pdb !== null; }, 'database to load', 1000);
             runs(function() {
                 if (pdb instanceof Error) {
                     throw pdb;
@@ -38,9 +42,9 @@ describe('Password Safe Database reader', function() {
         it('reports incorrect password'+appendString, function() {
             runs(function() {
                 err = null;
-                PWSafeDB.downloadAndDecrypt('test.psafe3', 'boguspass', {forceNoWorker: forceNoWorker}, function(_err) { err = _err; });
+                PWSafeDB.decryptFromUrl('test.psafe3', 'boguspass', {forceNoWorker: forceNoWorker}, function(_err) { err = _err; });
             });
-            waitsFor(function() { return err !== null; }, 'database to load', 3000);
+            waitsFor(function() { return err !== null; }, 'database to load', 1000);
             runs(function() {
                 expect(err.message).toEqual('Incorrect passphrase');
             });
@@ -49,9 +53,9 @@ describe('Password Safe Database reader', function() {
         it('reports mismatched HMAC (HMAC corrupt)'+appendString, function() {
             runs(function() {
                 err = null;
-                PWSafeDB.downloadAndDecrypt('test-corrupthmac.psafe3', 'pass', {forceNoWorker: forceNoWorker}, function(_err) { err = _err; });
+                PWSafeDB.decryptFromUrl('test-corrupthmac.psafe3', 'pass', {forceNoWorker: forceNoWorker}, function(_err) { err = _err; });
             });
-            waitsFor(function() { return err !== null; }, 'database to load', 3000);
+            waitsFor(function() { return err !== null; }, 'database to load', 1000);
             runs(function() {
                 expect(err.message).toEqual("HMAC didn't match -- something may be corrupted");
             });
@@ -62,9 +66,9 @@ describe('Password Safe Database reader', function() {
         it('reports mismatched HMAC (MAC corrupt)'+appendString, function() {
             runs(function() {
                 err = null;
-                PWSafeDB.downloadAndDecrypt('test-corruptdata.psafe3', 'pass', {forceNoWorker: forceNoWorker}, function(_err) { err = _err; });
+                PWSafeDB.decryptFromUrl('test-corruptdata.psafe3', 'pass', {forceNoWorker: forceNoWorker}, function(_err) { err = _err; });
             });
-            waitsFor(function() { return err !== null; }, 'database to load', 3000);
+            waitsFor(function() { return err !== null; }, 'database to load', 1000);
             runs(function() {
                 expect(err.message).toEqual("HMAC didn't match -- something may be corrupted");
             });
@@ -73,16 +77,35 @@ describe('Password Safe Database reader', function() {
 });
 
 describe('Password Safe Database writer', function() {
-    it('can load-reserialize-encrypt-load without loss', function() {
+    var checkRecords = function(db2, pdb) {
+        if (db2 instanceof Error) {
+            throw db2;
+        }
+
+        expect(db2.headers.length).toEqual(pdb.headers.length);
+        var i, k;
+        for (k in db2.headers) {
+            expect(db2.headers[k]).toEqual(pdb.headers[k], 'header "'+k+'" is equal');
+        }
+
+        expect(db2.records.length).toEqual(pdb.records.length);
+        for (i in db2.records) {
+            for (k in db2.records[i]) {
+                expect(db2.records[i][k]).toEqual(pdb.records[i][k], 'record ['+i+'].'+k+' is equal');
+            }
+        }
+    };
+
+    it('can load-reserialize-encrypt-read without loss', function() {
         var pdb = null;
         var url = 'test.psafe3';
         var pass = 'pass';
 
         runs(function() {
-            PWSafeDB.downloadAndDecrypt(url, pass, {strictFieldTypeCheck: true}, function(_pdb) { pdb = _pdb; });
+            PWSafeDB.decryptFromUrl(url, pass, {strictFieldTypeCheck: true}, function(_pdb) { pdb = _pdb; });
         });
 
-        waitsFor(function() { return pdb !== null; }, "database to load", 3000);
+        waitsFor(function() { return pdb !== null; }, "database to load", 1000);
 
         runs(function() {
             if (pdb instanceof Error) {
@@ -95,26 +118,31 @@ describe('Password Safe Database writer', function() {
                 new PWSafeDB().decrypt(pdb.encrypt(pass), pass, {strictFieldTypeCheck: true}, function(db) { db2 = db; });
             });
 
-            waitsFor(function() { return db2 !== null; }, 'database to decrypt', 3000);
+            waitsFor(function() { return db2 !== null; }, 'database to decrypt', 1000);
 
-            runs(function() {
-                if (db2 instanceof Error) {
-                    throw db2;
-                }
-
-                expect(db2.headers.length).toEqual(pdb.headers.length);
-                var i, k;
-                for (k in db2.headers) {
-                    expect(db2.headers[k]).toEqual(pdb.headers[k], 'header "'+k+'" is equal');
-                }
-
-                expect(db2.records.length).toEqual(pdb.records.length);
-                for (i in db2.records) {
-                    for (k in db2.records[i]) {
-                        expect(db2.records[i][k]).toEqual(pdb.records[i][k], 'record ['+i+'].'+k+' is equal');
-                    }
-                }
-            });
+            runs(function() { checkRecords(db2, pdb); });
         });
     });
+
+    if (PWSafeDB.isNode) {
+        it('can write and then read a file', function() {
+            var pdb = null, db2 = null;
+
+            runs(function() {
+                PWSafeDB.decryptFromUrl('test.psafe3', 'pass', {}, function(_pdb) { pdb = _pdb; });
+            });
+            waitsFor(function() { return pdb !== null; }, 1000, 'load database');
+
+            runs(function() {
+                pdb.encryptAndSaveFile('savepass', 'tmp.psafe3');
+                PWSafeDB.decryptFromUrl('tmp.psafe3', 'savepass', {}, function(_db2) { db2 = _db2; });
+            });
+            waitsFor(function() { return db2 !== null; }, 1000, 'load saved database');
+
+            runs(function() {
+                require('fs').unlink('tmp.psafe3');
+                checkRecords(db2, pdb);
+            });
+        });
+    }
 });

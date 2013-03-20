@@ -1,5 +1,5 @@
 // http://members.tele2.nl/MAvanEverdingen/Code/code.html
-(function() {
+(function(exports) {
 
 var tfsKey=[];
 var tfsM=[[],[],[],[]];
@@ -171,73 +171,71 @@ function rotw(w,n){ return ( w<<n | w>>>(32-n) ) & wMax; }
 function getB(x,n){ return (x>>>(n*8))&0xFF; }
 wMax = 0xffffffff;
 
-/*window.*/TwoFish = {
-    BLOCK_SIZE: 16,
-    decrypt: function(dataView, blockCount, key, cbcMode) {
-        tfsInit(key);
+exports.BLOCK_SIZE = 16;
+exports.decrypt = function(dataView, blockCount, key, cbcMode) {
+    tfsInit(key);
 
-        outBuffer = new Array(blockCount * this.BLOCK_SIZE);
-        outOffset = 0;
+    outBuffer = new Array(blockCount * this.BLOCK_SIZE);
+    outOffset = 0;
 
-        if (cbcMode) {
-            // skip initialization vector
-            dataView.seek(dataView.tell() + this.BLOCK_SIZE);
-            blockCount--;
-        }
-
-        while (blockCount--) {
-            var block = [dataView.getUint32(), dataView.getUint32(), dataView.getUint32(), dataView.getUint32()];
-
-            tfsDecrypt(block);
-
-            if (cbcMode) {
-                var tell = dataView.tell();
-                dataView.seek(tell - 2*this.BLOCK_SIZE);
-                for (var i = 0; i < this.BLOCK_SIZE; i += 4) {
-                    setW(outBuffer, outOffset + i, getW(outBuffer, outOffset + i) ^ dataView.getUint32());
-                }
-                dataView.seek(tell);
-            }
-
-            outOffset += this.BLOCK_SIZE;
-        }
-
-        return outBuffer;
-    },
-    encrypt: function(dataView, blockCount, key, cbcMode) {
-        tfsInit(key);
-
-        outBuffer = new Array(blockCount * this.BLOCK_SIZE);
-        outOffset = 0;
-
-        if (cbcMode) {
-            // initialization vector
-            dataView.seek(0);
-            for (outOffset = 0; outOffset < this.BLOCK_SIZE; outOffset++) {
-                outBuffer[outOffset] = dataView.getUint8();
-            }
-            blockCount--;
-        }
-
-        while (blockCount--) {
-            var block = [dataView.getUint32(), dataView.getUint32(), dataView.getUint32(), dataView.getUint32()];
-
-            if (cbcMode) {
-                var tell = dataView.tell();
-                dataView.seek(tell - 2*this.BLOCK_SIZE);
-                for (var i = 0; i < block.length; i++) {
-                    block[i] ^= getW(outBuffer, outOffset - this.BLOCK_SIZE + i*4);
-                }
-                dataView.seek(tell);
-            }
-
-            tfsEncrypt(block);
-
-            outOffset += this.BLOCK_SIZE;
-        }
-
-        return outBuffer;
+    if (cbcMode) {
+        // skip initialization vector
+        dataView.seek(dataView.tell() + this.BLOCK_SIZE);
+        blockCount--;
     }
+
+    while (blockCount--) {
+        var block = [dataView.getUint32(), dataView.getUint32(), dataView.getUint32(), dataView.getUint32()];
+
+        tfsDecrypt(block);
+
+        if (cbcMode) {
+            var tell = dataView.tell();
+            dataView.seek(tell - 2*this.BLOCK_SIZE);
+            for (var i = 0; i < this.BLOCK_SIZE; i += 4) {
+                setW(outBuffer, outOffset + i, getW(outBuffer, outOffset + i) ^ dataView.getUint32());
+            }
+            dataView.seek(tell);
+        }
+
+        outOffset += this.BLOCK_SIZE;
+    }
+
+    return outBuffer;
+};
+exports.encrypt = function(dataView, blockCount, key, cbcMode) {
+    tfsInit(key);
+
+    outBuffer = new Array(blockCount * this.BLOCK_SIZE);
+    outOffset = 0;
+
+    if (cbcMode) {
+        // initialization vector
+        dataView.seek(0);
+        for (outOffset = 0; outOffset < this.BLOCK_SIZE; outOffset++) {
+            outBuffer[outOffset] = dataView.getUint8();
+        }
+        blockCount--;
+    }
+
+    while (blockCount--) {
+        var block = [dataView.getUint32(), dataView.getUint32(), dataView.getUint32(), dataView.getUint32()];
+
+        if (cbcMode) {
+            var tell = dataView.tell();
+            dataView.seek(tell - 2*this.BLOCK_SIZE);
+            for (var i = 0; i < block.length; i++) {
+                block[i] ^= getW(outBuffer, outOffset - this.BLOCK_SIZE + i*4);
+            }
+            dataView.seek(tell);
+        }
+
+        tfsEncrypt(block);
+
+        outOffset += this.BLOCK_SIZE;
+    }
+
+    return outBuffer;
 };
 
-})();
+})(typeof module !== 'undefined' ? module.exports : (this.TwoFish = {}));

@@ -1,3 +1,9 @@
+if (typeof window === 'undefined') { // node.js
+    var TwoFish = require('../../twofish.js'),
+        jDataView = require('../../jDataView/src/jdataview.js'),
+        Crypto = require('../../crypto-sha256-hmac.js');
+}
+
 (function(vkvectors, vtvectors) {
 describe('Twofish crypto', function() {
     for (var i in vkvectors) {

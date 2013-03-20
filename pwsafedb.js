@@ -1,51 +1,67 @@
+(function(exports, global) {
+
 function PWSafeDB() {}
 
 // constants
 PWSafeDB.isWebWorker = typeof importScripts != 'undefined'; // am I a web worker?
+PWSafeDB.isNode = typeof module !== 'undefined';
 PWSafeDB.BLOCK_SIZE = 16;
 PWSafeDB.MIN_HASH_ITERATIONS = 2048; // recommended in specs
 
+if (PWSafeDB.isNode) {
+    var fs = require('fs');
+}
 
 // Load and return a database from the given url and passphrase
-PWSafeDB.downloadAndDecrypt = function(url, passphrase, options, callback) {
+PWSafeDB.decryptFromUrl = function(url, passphrase, options, callback) {
     if (options === undefined) {
         options = {};
     }
 
-    var useWebWorker = !options.forceNoWorker && window.Worker;
+    var useWebWorker = !options.forceNoWorker && (typeof window != 'undefined' && window.Worker);
 
-    jQuery.ajax({
-        url: url,
-        dataType: 'dataview',
-        cache: false,
-        success: function(dataview) {
-            if (useWebWorker) {
-                var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
-                worker.onmessage = function(event) {
-                    var ctor = window[event.data.type] || Error;
-                    var result = new ctor();
-                    for (var k in event.data) {
-                        if (k != 'type') {
-                            result[k] = event.data[k];
+    if (!PWSafeDB.isNode) {
+        jQuery.ajax({
+            url: url,
+            dataType: 'dataview',
+            cache: false,
+            success: function(dataview) {
+                if (useWebWorker) {
+                    var worker = new Worker(jQuery('script[src$="pwsafedb.js"]').attr('src'));
+                    worker.onmessage = function(event) {
+                        var ctor = global[event.data.type] || Error;
+                        var result = new ctor();
+                        for (var k in event.data) {
+                            if (k != 'type') {
+                                result[k] = event.data[k];
+                            }
                         }
-                    }
-                    callback(result); return;
-                };
+                        callback(result); return;
+                    };
 
-                // we discard this jDataView because we need to set endianness
-                worker.postMessage({buffer: dataview.buffer, passphrase: passphrase, options: options});
-            } else {
-                try {
-                    new PWSafeDB().decrypt(dataview.buffer, passphrase, options, function(pdb) { callback(pdb); return; });
-                } catch (e) {
-                    callback(e); return;
+                    // we discard this jDataView because we need to set endianness
+                    worker.postMessage({buffer: dataview.buffer, passphrase: passphrase, options: options});
+                } else {
+                    try {
+                        new PWSafeDB().decrypt(dataview.buffer, passphrase, options, callback);
+                    } catch (e) {
+                        callback(e); return;
+                    }
                 }
+            },
+            error: function(jqXHR, textStatus) {
+                callback(new Error("AJAX error. Status: "+textStatus)); return;
             }
-        },
-        error: function(jqXHR, textStatus) {
-            callback(new Error("AJAX error. Status: "+textStatus)); return;
-        }
-    });
+        });
+    } else { // node js
+        fs.readFile(url, function(err, buffer) {
+            if (err) {
+                callback(err);
+                return;
+            }
+            new PWSafeDB().decrypt(buffer, passphrase, options, callback);
+        });
+    }
 };
 
 PWSafeDB.extend = function(targetOb, properties) {
@@ -390,7 +406,7 @@ _chunkWork: function(chunkFunc, exceptionHandler) {
         }
     } else {
         var thiz = this;
-        window.setTimeout(function() {
+        setTimeout(function() {
             try {
                 return chunkFunc.apply(thiz);
             } catch (e) {
@@ -623,6 +639,15 @@ encrypt: function(passphrase, iterations) {
     }
 
     return view.buffer;
+},
+
+encryptAndSaveFile: function(passphrase, fileName, iterations) {
+    if (!PWSafeDB.isNode) {
+        throw new Error('saving files not supported in browser');
+    }
+
+    var buffer = this.encrypt(passphrase, iterations);
+    fs.writeFileSync(fileName, buffer, { mode: 384 /* 0600 - lint complains about using octal */ });
 }
 
 });
@@ -686,4 +711,15 @@ if (PWSafeDB.isWebWorker) {
             callback(e); return;
         }
     };
+}
+
+exports.PWSafeDB = PWSafeDB;
+exports.PWSafeDBField = PWSafeDBField;
+
+})(typeof module !== 'undefined' ? module.exports : this, this);
+
+if (typeof module !== 'undefined') { // node.js
+    var jDataView = require('./jDataView/src/jdataview.js'),
+        TwoFish = require('./twofish.js'),
+        Crypto = require('./crypto-sha256-hmac.js');
 }
